@@ -1,0 +1,1272 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>نظام الحضور والانصراف المدرسي</title>
+<script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@300;400;500;600;700&family=Tajawal:wght@400;700;900&display=swap" rel="stylesheet"/>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#f1f5f9;--white:#fff;
+  --s50:#f8fafc;--s100:#f1f5f9;--s200:#e2e8f0;--s300:#cbd5e1;
+  --s400:#94a3b8;--s500:#64748b;--s600:#475569;--s700:#334155;--s800:#1e293b;--s900:#0f172a;
+  --gr:#059669;--grb:#ecfdf5;--grl:#a7f3d0;
+  --re:#dc2626;--reb:#fef2f2;--rel:#fecaca;
+  --bl:#2563eb;--blb:#eff6ff;--bll:#bfdbfe;
+  --am:#d97706;--amb:#fffbeb;--aml:#fde68a;
+  --pu:#9333ea;--pub:#faf5ff;--pul:#e9d5ff;
+  --em:#059669;
+}
+body{background:var(--bg);color:var(--s900);font-family:'IBM Plex Sans Arabic',sans-serif;min-height:100vh}
+h1,h2,h3,h4,h5{font-family:'Tajawal',sans-serif}
+
+/* ─ Layout ─ */
+.app{display:flex;min-height:100vh}
+.sidebar{width:230px;background:var(--white);border-left:1px solid var(--s200);flex-shrink:0;padding:14px 0;position:sticky;top:0;height:100vh;overflow-y:auto}
+.main{flex:1;padding:20px;overflow-x:hidden;max-width:calc(100vw - 230px)}
+@media(max-width:800px){.sidebar{display:none}.main{max-width:100vw;padding:12px}}
+
+.sb-brand{margin:0 10px 14px;background:var(--s900);color:white;border-radius:14px;padding:13px}
+.sb-brand h1{font-size:14px;font-weight:900}
+.sb-brand p{font-size:10px;color:var(--s400);margin-top:1px}
+.nav-btn{display:flex;align-items:center;gap:10px;padding:10px 14px;font-size:13px;cursor:pointer;color:var(--s600);border:none;background:none;width:100%;font-family:inherit;border-right:3px solid transparent;transition:.15s}
+.nav-btn:hover{background:var(--s100);color:var(--s900)}
+.nav-btn.on{background:var(--s900);color:white;font-weight:600}
+.nav-icon{font-size:15px;width:18px;text-align:center}
+
+/* ─ Page header ─ */
+.pheader{background:var(--white);border-radius:18px;padding:18px 20px;margin-bottom:18px;border:1px solid var(--s200)}
+.pheader h2{font-size:19px;font-weight:800}
+.pheader p{font-size:12px;color:var(--s500);margin-top:2px}
+.toast{background:var(--s50);border:1px solid var(--s200);border-radius:10px;padding:9px 13px;font-size:12px;color:var(--s700);margin-top:10px;display:flex;align-items:center;gap:6px}
+
+/* ─ Cards ─ */
+.card{background:var(--white);border-radius:18px;padding:18px;border:1px solid var(--s200);margin-bottom:0}
+.ctitle{font-size:14px;font-weight:700;margin-bottom:14px;display:flex;align-items:center;gap:7px}
+
+/* ─ Stats ─ */
+.sgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:18px}
+@media(max-width:800px){.sgrid{grid-template-columns:repeat(2,1fr)}}
+.scard{background:var(--white);border-radius:14px;padding:16px;border:1px solid var(--s200)}
+.slabel{font-size:11px;color:var(--s500);margin-bottom:5px}
+.sval{font-family:'Tajawal',sans-serif;font-size:26px;font-weight:900;line-height:1}
+.shint{font-size:10px;color:var(--s400);margin-top:3px}
+.sicon{float:left;width:36px;height:36px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:17px}
+
+/* ─ Badges ─ */
+.bdg{display:inline-flex;align-items:center;padding:2px 9px;border-radius:20px;font-size:11px;font-weight:600;border:1px solid}
+.bg{background:var(--grb);color:var(--gr);border-color:var(--grl)}
+.br{background:var(--reb);color:var(--re);border-color:var(--rel)}
+.bb{background:var(--blb);color:var(--bl);border-color:var(--bll)}
+.ba{background:var(--amb);color:var(--am);border-color:var(--aml)}
+.bp{background:var(--pub);color:var(--pu);border-color:var(--pul)}
+.bs{background:var(--s50);color:var(--s600);border-color:var(--s200)}
+
+/* ─ Buttons ─ */
+.btn{display:inline-flex;align-items:center;gap:5px;padding:7px 14px;border-radius:10px;font-size:12px;font-weight:600;cursor:pointer;border:none;font-family:inherit;transition:.15s}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+.btn-p{background:var(--s900);color:white}.btn-p:hover:not(:disabled){background:var(--s800)}
+.btn-s{background:var(--gr);color:white}.btn-s:hover:not(:disabled){filter:brightness(1.1)}
+.btn-d{background:var(--re);color:white}.btn-d:hover:not(:disabled){filter:brightness(1.1)}
+.btn-o{background:var(--white);color:var(--s800);border:1px solid var(--s200)}.btn-o:hover{background:var(--s50)}
+.btn-w{background:#f59e0b;color:white}
+.btn-lg{width:100%;justify-content:center;padding:12px 20px;font-size:14px;border-radius:12px}
+.btn-sm{padding:5px 10px;font-size:11px;border-radius:8px}
+
+/* ─ Form ─ */
+.field{margin-bottom:12px}
+.field label{display:block;font-size:12px;font-weight:500;color:var(--s700);margin-bottom:4px}
+.inp{width:100%;border:1px solid var(--s200);border-radius:9px;padding:8px 11px;font-size:13px;font-family:inherit;outline:none;background:white;transition:.15s}
+.inp:focus{border-color:var(--bl);box-shadow:0 0 0 2px rgba(37,99,235,.1)}
+.sel{width:100%;border:1px solid var(--s200);border-radius:9px;padding:8px 11px;font-size:13px;font-family:inherit;outline:none;background:white;cursor:pointer}
+textarea.inp{resize:vertical;min-height:60px}
+
+/* ─ Grid helpers ─ */
+.g2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.g3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
+.g4{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+@media(max-width:800px){.g2,.g3,.g4{grid-template-columns:1fr}}
+
+/* ─ Table ─ */
+.twrap{overflow-x:auto;border-radius:14px;border:1px solid var(--s200)}
+table{width:100%;border-collapse:collapse;font-size:12px}
+thead{background:var(--s900);color:white}
+th{padding:10px 12px;text-align:right;font-weight:600;font-size:11px;white-space:nowrap}
+td{padding:9px 12px;border-bottom:1px solid var(--s100);vertical-align:middle}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:var(--s50)}
+.trej td{background:#fff8f8}
+
+/* ─ Alerts ─ */
+.alt{padding:10px 13px;border-radius:10px;font-size:12px;margin-bottom:12px;display:flex;align-items:flex-start;gap:7px}
+.alt-g{background:var(--grb);border:1px solid var(--grl);color:var(--gr)}
+.alt-r{background:var(--reb);border:1px solid var(--rel);color:var(--re)}
+.alt-a{background:var(--amb);border:1px solid var(--aml);color:var(--am)}
+.alt-b{background:var(--blb);border:1px solid var(--bll);color:var(--bl)}
+
+/* ─ Login Screen ─ */
+.login-wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#0f172a 0%,#1e3a5f 50%,#0f172a 100%);padding:20px;position:relative;overflow:hidden}
+.login-wrap::before{content:"";position:absolute;inset:0;background:radial-gradient(ellipse at 30% 50%,rgba(37,99,235,.15),transparent 60%),radial-gradient(ellipse at 70% 20%,rgba(5,150,105,.1),transparent 50%)}
+.login-card{background:white;border-radius:24px;padding:36px 32px;width:100%;max-width:400px;box-shadow:0 25px 80px rgba(0,0,0,.4);position:relative}
+.login-logo{width:64px;height:64px;background:#0f172a;border-radius:18px;display:flex;align-items:center;justify-content:center;font-size:30px;margin:0 auto 16px}
+.login-title{font-size:22px;font-weight:900;text-align:center;margin-bottom:4px}
+.login-sub{font-size:12px;color:#64748b;text-align:center;margin-bottom:28px}
+.login-divider{height:1px;background:#e2e8f0;margin:16px 0}
+.login-tabs{display:grid;grid-template-columns:1fr 1fr;gap:4px;background:#f1f5f9;border-radius:12px;padding:4px;margin-bottom:20px}
+.login-tab{padding:9px;text-align:center;font-size:13px;font-weight:600;border-radius:9px;cursor:pointer;transition:.2s;border:none;background:transparent;font-family:inherit;color:#64748b}
+.login-tab.on{background:white;color:#0f172a;box-shadow:0 1px 4px rgba(0,0,0,.12)}
+.otp-grid{display:flex;gap:8px;justify-content:center;margin:12px 0}
+.otp-box{width:46px;height:54px;border:2px solid #e2e8f0;border-radius:12px;font-size:22px;font-weight:700;text-align:center;outline:none;font-family:inherit;transition:.2s;background:white}
+.otp-box:focus{border-color:#2563eb;box-shadow:0 0 0 3px rgba(37,99,235,.1)}
+.err-box{background:#fef2f2;border:1px solid #fecaca;border-radius:10px;padding:10px 13px;font-size:12px;color:#dc2626;margin-bottom:12px;display:flex;align-items:center;gap:6px}
+.ok-box{background:#ecfdf5;border:1px solid #a7f3d0;border-radius:10px;padding:10px 13px;font-size:12px;color:#059669;margin-bottom:12px;display:flex;align-items:center;gap:6px}
+.hint-box{background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;padding:10px 13px;font-size:11px;color:#1d4ed8;margin-bottom:12px;line-height:1.6}
+.logout-btn{display:flex;align-items:center;gap:6px;background:#fef2f2;border:1px solid #fecaca;color:#dc2626;border-radius:9px;padding:6px 12px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit;margin-right:auto;transition:.2s}
+.logout-btn:hover{background:#fee2e2}
+.gate-card{background:white;border-radius:22px;padding:32px 28px;width:100%;max-width:400px;box-shadow:0 20px 60px rgba(0,0,0,.3)}
+.gps-row{display:flex;align-items:center;justify-content:space-between;border:1px solid var(--s200);border-radius:12px;padding:12px 14px;margin-bottom:10px;transition:.2s}
+.gps-row.on{border-color:var(--grl);background:var(--grb)}
+.gps-icon{width:38px;height:38px;border-radius:10px;background:var(--s100);display:flex;align-items:center;justify-content:center;font-size:18px}
+.gps-row.on .gps-icon{background:var(--grl)}
+.tgbtn{padding:7px 15px;border-radius:9px;border:none;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit;transition:.15s}
+.tg-off{background:var(--s900);color:white}
+.tg-on{background:var(--gr);color:white}
+
+/* ─ Collection toast ─ */
+.cpt{position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:9999;background:var(--gr);color:white;border-radius:14px;padding:12px 18px;box-shadow:0 8px 30px rgba(0,0,0,.2);min-width:260px;max-width:90vw;animation:sd .3s ease}
+@keyframes sd{from{opacity:0;transform:translateX(-50%) translateY(-16px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}
+
+/* ─ Info row ─ */
+.ir{display:flex;align-items:center;justify-content:space-between;background:var(--s50);border-radius:9px;padding:9px 12px;margin-bottom:7px;font-size:12px}
+.ir span:first-child{color:var(--s500)}
+.ir span:last-child{font-weight:600}
+
+/* ─ CP item ─ */
+.cpi{border:1px solid var(--s200);border-radius:11px;padding:10px 12px;margin-bottom:7px;transition:.2s}
+.cpi.r{border-color:var(--grl);background:var(--grb)}
+.cpi.p{background:var(--s50)}
+.cpn{width:22px;height:22px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;flex-shrink:0}
+.cpn.r{background:var(--gr);color:white}
+.cpn.p{background:var(--s300);color:var(--s700)}
+
+/* ─ Area tag ─ */
+.atag{display:inline-flex;align-items:center;gap:3px;background:var(--blb);border:1px solid var(--bll);color:var(--bl);border-radius:20px;padding:3px 9px;font-size:11px;font-weight:500;margin:2px}
+
+/* ─ Trip section ─ */
+.tsec{border:1px solid var(--s200);border-radius:12px;overflow:hidden;margin-bottom:10px}
+.tsec-h{background:var(--s50);border-bottom:1px solid var(--s200);padding:9px 13px;font-size:12px;font-weight:700;color:var(--s700);display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.tsec-b{padding:12px 13px;font-size:12px;line-height:1.9}
+
+/* ─ Rep card ─ */
+.repcard{background:var(--white);border:1px solid var(--s200);border-radius:18px;overflow:hidden;margin-bottom:18px}
+.repcard-h{background:var(--s900);color:white;padding:14px 18px}
+.repcard-h h3{font-size:15px;font-weight:800}
+.repcard-h p{font-size:11px;color:var(--s400);margin-top:1px}
+.rmg{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:10px}
+.rmi{background:rgba(255,255,255,.08);border-radius:9px;padding:7px;text-align:center}
+.rmi .lbl{font-size:9px;color:var(--s400)}
+.rmi .val{font-size:12px;font-weight:700;margin-top:1px}
+.repcard-b{padding:16px}
+
+/* ─ Modal ─ */
+.mov{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:200;display:flex;align-items:center;justify-content:center;padding:14px}
+.modal{background:white;border-radius:18px;width:100%;max-width:500px;max-height:88vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.25)}
+.mh{padding:16px 18px;border-bottom:1px solid var(--s200);display:flex;align-items:center;justify-content:space-between}
+.mh h3{font-size:15px;font-weight:700}
+.mcls{background:none;border:none;font-size:18px;cursor:pointer;color:var(--s400);border-radius:6px;padding:2px 6px}
+.mcls:hover{background:var(--s100)}
+.mbody{padding:18px}
+.mfoot{padding:12px 18px;border-top:1px solid var(--s200);display:flex;gap:7px;justify-content:flex-end}
+
+/* ─ Misc ─ */
+.flex{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.flex-bt{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.dist-n{font-family:'Tajawal',sans-serif;font-size:38px;font-weight:900;line-height:1}
+.mob-sel{display:none}
+@media(max-width:800px){.mob-sel{display:flex;gap:8px;margin-bottom:12px}}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const {useState,useMemo,useEffect}=React;
+
+// ── SEED DATA ────────────────────────────────────────────────
+// رقم المدير — يُعدَّل هنا مباشرة
+const ADMIN_PHONE = "92317441";
+const ADMIN_PASS  = "1234"; // كلمة مرور المدير
+
+const EMPS0=[
+  {id:1,name:"أحمد البلوشي",  phone:"96890000001",civilId:"12345678",job:"سائق حافلة",  active:true, locId:1,deviceId:"DEV-AH-001",device:"iPhone 14 / iOS 17",       areas:"المسيلة-الشعبية-الصمية-الخوير"},
+  {id:2,name:"فاطمة الهنائية",phone:"96890000002",civilId:"87654321",job:"مشرفة حافلة", active:true, locId:1,deviceId:"DEV-FA-002",device:"Samsung S23 / Android 14",  areas:"الموالح-الحيل-العامرات-السيب"},
+  {id:3,name:"سالم العامري",  phone:"96890000003",civilId:"11112222",job:"سائق حافلة",  active:false,locId:2,deviceId:"DEV-SA-003",device:"Pixel 8 / Android 14",      areas:"بوشر-الغبرة-الشاطئ"},
+];
+const SCHLS0=[
+  {id:1,name:"مدرسة النور - المبنى الرئيسي",lat:23.588, lng:58.3829,radius:120,reqIn:true, reqOut:false},
+  {id:2,name:"مدرسة النور - مبنى النشاط",   lat:23.5892,lng:58.3861,radius:90, reqIn:true, reqOut:true},
+];
+const SCH0={
+  morning:{start:"06:30",end:"08:00",gb:10,ga:15},
+  evening:{start:"12:30",end:"14:30",gb:0, ga:15},
+  tracking:{on:true,start:"06:30",end:"14:30",stopMin:10},
+  extra:[
+    {id:1,name:"انصراف مبكر",start:"12:30",end:"13:00",app:true, out:false},
+    {id:2,name:"انصراف عادي",start:"13:30",end:"14:00",app:false,out:false},
+    {id:3,name:"انصراف نشاط",start:"15:00",end:"16:00",app:false,out:true},
+  ],
+};
+const LOGS0=[
+  {id:1,eId:1,eName:"أحمد البلوشي",  type:"حضور",  st:"مقبول", reason:"داخل نطاق المدرسة",  date:"2026-05-06",time:"06:52",dist:34, inside:true, notes:"",device:"iPhone 14 / iOS 17"},
+  {id:2,eId:2,eName:"فاطمة الهنائية",type:"حضور",  st:"مرفوض",reason:"خارج نطاق المدرسة",  date:"2026-05-06",time:"07:03",dist:410,inside:false,notes:"محاولة خارجية",device:"Samsung S23"},
+  {id:3,eId:1,eName:"أحمد البلوشي",  type:"انصراف",st:"مقبول", reason:"ضمن وقت الانصراف",   date:"2026-05-06",time:"13:35",dist:58, inside:true, notes:"",device:"iPhone 14 / iOS 17"},
+];
+const TRIP={
+  1:{
+    ci:{done:true, time:"06:52",date:"2026-05-06",loc:"مدرسة النور - المبنى الرئيسي",dist:34, st:"مقبول"},
+    co:{done:false,time:null,  date:null,          loc:null,                           dist:null,st:null},
+    areas:[
+      {name:"المسيلة",r:true, time:"07:18",date:"2026-05-06",km:"12.4 كم",loc:"منطقة المسيلة الشمالية"},
+      {name:"الشعبية",r:true, time:"07:41",date:"2026-05-06",km:"9.1 كم", loc:"تقاطع الشعبية الرئيسي"},
+      {name:"الصمية", r:false,time:null,   date:null,         km:"6.7 كم", loc:null},
+      {name:"الخوير", r:false,time:null,   date:null,         km:"3.2 كم", loc:null},
+    ],
+    rej:[{time:"06:48",date:"2026-05-06",reason:"GPS غير دقيق — دقة 85م",loc:"مدرسة النور",dist:40}],
+  },
+  2:{
+    ci:{done:true, time:"07:03",date:"2026-05-06",loc:"خارج نطاق المدرسة",dist:410,st:"مرفوض"},
+    co:{done:false,time:null,  date:null,loc:null,dist:null,st:null},
+    areas:[
+      {name:"الموالح", r:true, time:"07:30",date:"2026-05-06",km:"15.2 كم",loc:"دوار الموالح"},
+      {name:"الحيل",   r:false,time:null,   date:null,         km:"11.8 كم",loc:null},
+      {name:"العامرات",r:false,time:null,   date:null,         km:"8.3 كم", loc:null},
+      {name:"السيب",   r:false,time:null,   date:null,         km:"4.5 كم", loc:null},
+    ],
+    rej:[
+      {time:"07:03",date:"2026-05-06",reason:"خارج نطاق المدرسة — 410م",loc:"الحي الجنوبي",dist:410},
+      {time:"07:01",date:"2026-05-06",reason:"خارج وقت الحضور",          loc:"طريق السيب",  dist:820},
+    ],
+  },
+  3:{
+    ci:{done:false,time:null,date:null,loc:null,dist:null,st:null},
+    co:{done:false,time:null,date:null,loc:null,dist:null,st:null},
+    areas:[
+      {name:"بوشر",  r:false,time:null,date:null,km:"7.1 كم",loc:null},
+      {name:"الغبرة",r:false,time:null,date:null,km:"5.4 كم",loc:null},
+      {name:"الشاطئ",r:false,time:null,date:null,km:"2.9 كم",loc:null},
+    ],
+    rej:[],
+  },
+};
+
+// ── HELPERS ──────────────────────────────────────────────────
+const toMin=(t)=>{const[h,m]=t.split(":").map(Number);return h*60+m};
+const inT=(n,s,e,b=0,a=0)=>{const x=toMin(n);return x>=toMin(s)-b&&x<=toMin(e)+a};
+const parseA=str=>str?str.split("-").map(s=>s.trim()).filter(Boolean):[];
+function distM(a,b){
+  const R=6371000,rad=d=>d*Math.PI/180;
+  const dLat=rad(b.lat-a.lat),dLng=rad(b.lng-a.lng);
+  const s=Math.sin(dLat/2)**2+Math.cos(rad(a.lat))*Math.cos(rad(b.lat))*Math.sin(dLng/2)**2;
+  return Math.round(R*2*Math.atan2(Math.sqrt(s),Math.sqrt(1-s)));
+}
+const today=()=>new Date().toISOString().slice(0,10);
+
+// ── BADGE ────────────────────────────────────────────────────
+function B({t="s",children}){
+  const m={g:"bg",r:"br",b:"bb",a:"ba",p:"bp",s:"bs"};
+  return <span className={`bdg ${m[t]||"bs"}`}>{children}</span>;
+}
+
+// ── LOGIN SCREEN ─────────────────────────────────────────────
+function LoginScreen({employees,onLogin}){
+  const[tab,setTab]   = useState("employee"); // "employee" | "admin"
+  const[phone,setPhone]= useState("");
+  const[pass,setPass]  = useState("");
+  const[otp,setOtp]    = useState(["","","","",""]);
+  const[step,setStep]  = useState("phone"); // "phone" | "otp"
+  const[err,setErr]    = useState("");
+  const[pending,setPending]= useState(null);
+
+  const generatedOtp = "12345"; // OTP ثابت للتجربة
+
+  function handlePhoneSubmit(){
+    setErr("");
+    const p = phone.trim();
+    if(!p){ setErr("يرجى إدخال رقم الهاتف"); return; }
+
+    if(tab==="admin"){
+      if(p !== ADMIN_PHONE){ setErr("رقم الهاتف غير مسجّل كمدير في النظام"); return; }
+      if(pass !== ADMIN_PASS){ setErr("كلمة المرور غير صحيحة"); return; }
+      onLogin({role:"admin", name:"المدير", phone:p});
+      return;
+    }
+
+    // Employee login
+    const emp = employees.find(e=>e.phone===p);
+    if(!emp){ setErr("رقم الهاتف غير مسجّل في النظام"); return; }
+    if(!emp.active){ setErr("هذا الحساب غير مفعّل — تواصل مع الإدارة"); return; }
+    setPending(emp);
+    setStep("otp");
+  }
+
+  function handleOtp(){
+    setErr("");
+    if(otp.join("")===generatedOtp){
+      onLogin({role:"employee", ...pending});
+    } else {
+      setErr("رمز التحقق غير صحيح");
+    }
+  }
+
+  function setOtpDigit(i,v){
+    if(v.length>1) return;
+    const n=[...otp]; n[i]=v; setOtp(n);
+    if(v && i<4) document.getElementById(`otp${i+1}`)?.focus();
+    if(!v && i>0) document.getElementById(`otp${i-1}`)?.focus();
+  }
+
+  return(
+    <div className="login-wrap">
+      <div className="login-card">
+        <div className="login-logo">🏫</div>
+        <h1 className="login-title">نظام الحضور المدرسي</h1>
+        <p className="login-sub">سجّل الدخول برقم هاتفك المسجّل</p>
+
+        {step==="phone" && <>
+          {/* Tabs */}
+          <div className="login-tabs">
+            <button className={`login-tab ${tab==="employee"?"on":""}`} onClick={()=>{setTab("employee");setErr("");}}>👤 موظف</button>
+            <button className={`login-tab ${tab==="admin"?"on":""}`}    onClick={()=>{setTab("admin");setErr("");}}>⚙️ مدير</button>
+          </div>
+
+          {err && <div className="err-box">⚠️ {err}</div>}
+
+          <div className="field">
+            <label>رقم الهاتف {tab==="admin"?"(رقم المدير)":"المسجّل في النظام"}</label>
+            <input className="inp" value={phone} onChange={e=>setPhone(e.target.value)}
+              placeholder={tab==="admin"?"أدخل رقم المدير":"أدخل رقم هاتفك"}
+              onKeyDown={e=>e.key==="Enter"&&handlePhoneSubmit()}
+              style={{direction:"ltr",textAlign:"right",letterSpacing:"1px"}}/>
+          </div>
+
+          {tab==="admin" && (
+            <div className="field">
+              <label>كلمة المرور</label>
+              <input type="password" className="inp" value={pass} onChange={e=>setPass(e.target.value)}
+                placeholder="••••" onKeyDown={e=>e.key==="Enter"&&handlePhoneSubmit()}/>
+            </div>
+          )}
+
+          {tab==="employee" && (
+            <div className="hint-box">
+              📋 <b>أرقام تجريبية:</b><br/>
+              {employees.filter(e=>e.active).map(e=>`${e.name}: ${e.phone}`).join(" | ")}
+            </div>
+          )}
+          {tab==="admin" && (
+            <div className="hint-box">
+              🔐 <b>بيانات المدير:</b> رقم الهاتف: {ADMIN_PHONE} · كلمة المرور: {ADMIN_PASS}
+            </div>
+          )}
+
+          <button className="btn btn-p btn-lg" onClick={handlePhoneSubmit}>
+            {tab==="admin" ? "دخول لوحة المدير ←" : "إرسال رمز التحقق →"}
+          </button>
+        </>}
+
+        {step==="otp" && <>
+          <div className="ok-box">✅ تم إرسال رمز التحقق إلى {pending?.name}</div>
+          <div className="hint-box">🔑 <b>الرمز التجريبي:</b> {generatedOtp}</div>
+          {err && <div className="err-box">⚠️ {err}</div>}
+
+          <div style={{textAlign:"center",marginBottom:8,fontSize:13,color:"#475569"}}>أدخل رمز التحقق (5 أرقام)</div>
+          <div className="otp-grid">
+            {otp.map((v,i)=>(
+              <input key={i} id={`otp${i}`} className="otp-box" maxLength={1} value={v}
+                onChange={e=>setOtpDigit(i,e.target.value)}
+                onKeyDown={e=>e.key==="Backspace"&&!v&&i>0&&document.getElementById(`otp${i-1}`)?.focus()}/>
+            ))}
+          </div>
+          <button className="btn btn-s btn-lg" style={{marginBottom:10}} onClick={handleOtp}>تأكيد الدخول ✓</button>
+          <button className="btn btn-o btn-lg" onClick={()=>{setStep("phone");setOtp(["","","","",""]);setErr("");setPending(null);}}>← العودة</button>
+        </>}
+
+        <div style={{marginTop:20,textAlign:"center",fontSize:10,color:"#94a3b8"}}>
+          يُستخدم التتبع فقط خلال ساعات الدوام المحددة من الإدارة
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── GPS GATE ─────────────────────────────────────────────────
+function GpsGate({onAllow}){
+  const[gps,setGps]=useState(false);
+  const[trk,setTrk]=useState(false);
+  const ok=gps&&trk;
+  return(
+    <div className="gate">
+      <div className="gate-card">
+        <div style={{textAlign:"center",marginBottom:22}}>
+          <div style={{width:58,height:58,background:"#0f172a",borderRadius:16,display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:26,marginBottom:10}}>🏫</div>
+          <h1 style={{fontSize:20,fontWeight:900}}>نظام الحضور المدرسي</h1>
+          <p style={{fontSize:12,color:"#64748b",marginTop:4}}>يتطلب النظام تفعيل GPS والتتبع أولاً</p>
+        </div>
+
+        <div className={`gps-row ${gps?"on":""}`}>
+          <div style={{display:"flex",alignItems:"center",gap:10}}>
+            <div className="gps-icon">{gps?"✅":"📍"}</div>
+            <div><p style={{fontWeight:700,fontSize:13}}>خدمة GPS</p><p style={{fontSize:11,color:"#64748b"}}>{gps?"مفعّل ✓":"غير مفعّل"}</p></div>
+          </div>
+          <button className={`tgbtn ${gps?"tg-on":"tg-off"}`} onClick={()=>setGps(v=>!v)}>{gps?"مفعّل ✓":"تفعيل"}</button>
+        </div>
+
+        <div className={`gps-row ${trk?"on":""}`}>
+          <div style={{display:"flex",alignItems:"center",gap:10}}>
+            <div className="gps-icon">{trk?"✅":"🗺️"}</div>
+            <div><p style={{fontWeight:700,fontSize:13}}>صلاحية التتبع</p><p style={{fontSize:11,color:"#64748b"}}>{trk?"مفعّل ✓":"غير مفعّل"}</p></div>
+          </div>
+          <button className={`tgbtn ${trk?"tg-on":"tg-off"}`} onClick={()=>setTrk(v=>!v)}>{trk?"مفعّل ✓":"تفعيل"}</button>
+        </div>
+
+        {ok
+          ?<div className="alt alt-g" style={{marginTop:12,justifyContent:"center"}}>✅ GPS والتتبع مفعّلان — يمكنك الدخول</div>
+          :<div className="alt alt-a" style={{marginTop:12,justifyContent:"center"}}>⚠️ يجب تفعيل GPS والتتبع معاً للمتابعة</div>
+        }
+
+        <button className="btn btn-p btn-lg" style={{marginTop:12}} disabled={!ok} onClick={onAllow}>
+          {ok?"الدخول إلى النظام ←":"فعّل GPS والتتبع أولاً"}
+        </button>
+        <p style={{textAlign:"center",fontSize:10,color:"#94a3b8",marginTop:10}}>يُستخدم التتبع فقط خلال ساعات الدوام</p>
+      </div>
+    </div>
+  );
+}
+
+// ── DASHBOARD ────────────────────────────────────────────────
+function Dashboard({stats,logs,employees,exportCsv}){
+  const[sel,setSel]=useState(1);
+  const emp=employees.find(e=>e.id===sel)||employees[0];
+  const trip=TRIP[sel]||TRIP[1];
+  const areas=parseA(emp.areas);
+  const rN=trip.areas.filter(a=>a.r).length;
+
+  return(
+    <div>
+      {/* Stats */}
+      <div className="sgrid">
+        {[["👥","الموظفون",stats.total,`${stats.active} فعّال`,"#2563eb"],
+          ["✅","مقبول",stats.accepted,"حضور وانصراف","#059669"],
+          ["❌","مرفوض",stats.rejected,"خارج الوقت/الموقع","#dc2626"],
+          ["📍","نقاط توقف",3,"مرصودة تلقائياً","#9333ea"]].map(([ic,lb,vl,hn,cl],i)=>(
+          <div key={i} className="scard">
+            <div className="sicon" style={{background:cl+"18",color:cl}}>{ic}</div>
+            <div className="slabel">{lb}</div>
+            <div className="sval" style={{color:cl}}>{vl}</div>
+            <div className="shint">{hn}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Trip monitor */}
+      <div className="card">
+        <div className="flex-bt" style={{marginBottom:16}}>
+          <div className="ctitle" style={{margin:0}}>📊 متابعة رحلة الموظف — للمدير</div>
+          <div className="flex">
+            <select className="sel" style={{width:"auto"}} value={sel} onChange={e=>setSel(Number(e.target.value))}>
+              {employees.map(e=><option key={e.id} value={e.id}>{e.name}</option>)}
+            </select>
+            <button className="btn btn-o btn-sm" onClick={exportCsv}>📥 تصدير</button>
+          </div>
+        </div>
+
+        {/* Employee strip */}
+        <div style={{background:"#f8fafc",border:"1px solid #e2e8f0",borderRadius:12,padding:14,marginBottom:16}}>
+          <div className="flex-bt">
+            <div className="flex">
+              <div style={{width:46,height:46,borderRadius:13,background:"#0f172a",color:"white",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,fontWeight:900,fontFamily:"Tajawal"}}>{emp.name[0]}</div>
+              <div>
+                <div style={{fontWeight:800,fontSize:15}}>{emp.name}</div>
+                <div style={{fontSize:12,color:"#64748b"}}>{emp.job}</div>
+              </div>
+            </div>
+            <B t={emp.active?"g":"r"}>{emp.active?"فعّال":"غير فعّال"}</B>
+          </div>
+          <div className="flex" style={{marginTop:10}}>
+            <span style={{background:"white",border:"1px solid #e2e8f0",borderRadius:7,padding:"3px 9px",fontSize:11}}>📱 {emp.phone}</span>
+            <span style={{background:"white",border:"1px solid #e2e8f0",borderRadius:7,padding:"3px 9px",fontSize:11}}>🪪 {emp.civilId}</span>
+            <span style={{background:"white",border:"1px solid #e2e8f0",borderRadius:7,padding:"3px 9px",fontSize:11,maxWidth:180,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>📟 {emp.device}</span>
+          </div>
+          <div style={{marginTop:8,display:"flex",flexWrap:"wrap",gap:3,alignItems:"center"}}>
+            <span style={{fontSize:11,color:"#64748b",marginLeft:4}}>🚌 مناطق التوصيل:</span>
+            {areas.map((a,i)=><span key={i} className="atag">{i+1}. {a}</span>)}
+          </div>
+        </div>
+
+        <div className="g3">
+          {/* Check-in/out */}
+          <div>
+            <div style={{fontWeight:700,fontSize:12,color:"#334155",marginBottom:8}}>🕐 الحضور والانصراف</div>
+            <div className="tsec">
+              <div className="tsec-h">✅ تسجيل الحضور <span style={{marginRight:"auto"}}><B t={trip.ci.done?(trip.ci.st==="مقبول"?"g":"r"):"s"}>{trip.ci.done?trip.ci.st:"لم يسجّل"}</B></span></div>
+              <div className="tsec-b">
+                {trip.ci.done?(
+                  <>
+                    <div><b>التاريخ:</b> {trip.ci.date}</div>
+                    <div><b>الوقت:</b> {trip.ci.time}</div>
+                    <div><b>الموقع:</b> {trip.ci.loc}</div>
+                    <div><b>المسافة:</b> {trip.ci.dist} م</div>
+                  </>
+                ):<span style={{color:"#94a3b8"}}>لم يتم تسجيل الحضور بعد</span>}
+              </div>
+            </div>
+            <div className="tsec">
+              <div className="tsec-h">🚪 تسجيل الانصراف <span style={{marginRight:"auto"}}><B t={trip.co.done?"p":"s"}>{trip.co.done?"مقبول":"لم يسجّل"}</B></span></div>
+              <div className="tsec-b">
+                {trip.co.done?(
+                  <><div><b>التاريخ:</b> {trip.co.date}</div><div><b>الوقت:</b> {trip.co.time}</div></>
+                ):<span style={{color:"#94a3b8"}}>لم يتم تسجيل الانصراف بعد</span>}
+              </div>
+            </div>
+          </div>
+
+          {/* Collection points */}
+          <div>
+            <div style={{fontWeight:700,fontSize:12,color:"#334155",marginBottom:8}}>📍 نقاط التجميع ({rN}/{trip.areas.length})</div>
+            {trip.areas.map((a,i)=>(
+              <div key={i} className={`cpi ${a.r?"r":"p"}`}>
+                <div style={{display:"flex",alignItems:"center",gap:7,marginBottom:a.r?5:0}}>
+                  <span className={`cpn ${a.r?"r":"p"}`}>{a.r?"✓":i+1}</span>
+                  <span style={{fontWeight:600,fontSize:12}}>{a.name}</span>
+                  <span style={{marginRight:"auto"}}><B t={a.r?"g":"s"}>{a.r?"وصل ✓":"لم يصل"}</B></span>
+                </div>
+                {a.r&&<div style={{fontSize:11,color:"#475569",paddingRight:30,lineHeight:1.8}}>
+                  <div><b>التاريخ:</b> {a.date} — <b>الوقت:</b> {a.time}</div>
+                  {a.loc&&<div><b>الموقع:</b> {a.loc}</div>}
+                </div>}
+                <div style={{fontSize:10,color:"#2563eb",paddingRight:30,marginTop:2}}>📏 {a.km} من المدرسة</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Rejected */}
+          <div>
+            <div style={{fontWeight:700,fontSize:12,color:"#334155",marginBottom:8}}>❌ المرفوضة ({trip.rej.length})</div>
+            {trip.rej.length===0
+              ?<div className="alt alt-g">✓ لا توجد عمليات مرفوضة</div>
+              :trip.rej.map((r,i)=>(
+                <div key={i} style={{background:"#fef2f2",border:"1px solid #fecaca",borderRadius:10,padding:10,marginBottom:8}}>
+                  <div style={{fontWeight:700,fontSize:11,color:"#b91c1c",marginBottom:4}}>محاولة مرفوضة #{i+1}</div>
+                  <div style={{fontSize:11,color:"#dc2626",lineHeight:1.8}}>
+                    <div><b>التاريخ:</b> {r.date} — <b>الوقت:</b> {r.time}</div>
+                    <div><b>السبب:</b> {r.reason}</div>
+                    <div><b>الموقع:</b> {r.loc}</div>
+                    <div><b>المسافة:</b> {r.dist} م</div>
+                  </div>
+                </div>
+              ))}
+
+            <div style={{marginTop:14}}>
+              <div style={{fontWeight:700,fontSize:11,color:"#475569",marginBottom:7}}>آخر العمليات</div>
+              {logs.slice(0,4).map(l=>(
+                <div key={l.id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",background:l.st==="مرفوض"?"#fff8f8":"#f8fafc",border:`1px solid ${l.st==="مرفوض"?"#fecaca":"#e2e8f0"}`,borderRadius:9,padding:"7px 10px",marginBottom:5,fontSize:11}}>
+                  <div><div style={{fontWeight:600}}>{l.eName}</div><div style={{color:"#94a3b8"}}>{l.date} — {l.time}</div></div>
+                  <B t={l.st==="مقبول"?"g":"r"}>{l.type} {l.st}</B>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── EMPLOYEE VIEW ────────────────────────────────────────────
+function EmpView({employees,logs,setLogs,schools,schedules,fixedEmpId}){
+  const[selId,setSelId]=useState(fixedEmpId||1);
+  const[curT,setCurT]=useState("07:15");
+  const[simL,setSimL]=useState("outside");
+  const[note,setNote]=useState("");
+  const[reached,setReached]=useState([]);
+  const[cpAlert,setCpAlert]=useState(null);
+
+  // If fixedEmpId is set (employee login), lock to that employee
+  const effectiveId = fixedEmpId || selId;
+
+  const emp=employees.find(e=>e.id===effectiveId)||employees[0];
+  const school=schools.find(s=>s.id===emp.locId)||schools[0];
+  const areas=parseA(emp.areas);
+
+  const simPt=useMemo(()=>{
+    if(simL==="inside") return{lat:school.lat+0.00015,lng:school.lng+0.00012};
+    if(simL==="near")   return{lat:school.lat+0.00065,lng:school.lng+0.00062};
+    return{lat:school.lat+0.0028,lng:school.lng+0.0024};
+  },[simL,school]);
+
+  const dist=distM(school,simPt);
+  const inside=dist<=school.radius;
+  const inM=inT(curT,schedules.morning.start,schedules.morning.end,schedules.morning.gb,schedules.morning.ga);
+  const inE=inT(curT,schedules.evening.start,schedules.evening.end,schedules.evening.gb,schedules.evening.ga);
+  const inTrk=schedules.tracking.on&&inT(curT,schedules.tracking.start,schedules.tracking.end);
+
+  function reachArea(name){
+    if(reached.includes(name))return;
+    setReached(p=>[...p,name]);
+    setCpAlert(name);
+    setTimeout(()=>setCpAlert(null),5000);
+  }
+
+  function doLog(type){
+    if(!emp.active){alert("رقم الهاتف المدرج غير مفعّل.");return;}
+    if(type==="حضور"&&!inM){alert("خارج وقت الحضور المحدد.");return;}
+    if(type==="حضور"&&school.reqIn&&!inside){alert("أنت خارج منطقة المدرسة.");return;}
+    if(type==="انصراف"&&!inE){alert("خارج وقت الانصراف المحدد.");return;}
+    const log={id:Date.now(),eId:emp.id,eName:emp.name,type,st:"مقبول",reason:inside?"داخل نطاق المدرسة":"مسموح خارج",date:today(),time:curT,dist,inside,notes:note,device:emp.device};
+    setLogs(p=>[log,...p]);
+    setNote("");
+    alert(`✅ تم تسجيل ${type} بنجاح`);
+  }
+
+  const km=i=>(((areas.length-i)*3.2)+1.5).toFixed(1);
+
+  return(
+    <div>
+      {cpAlert&&(
+        <div className="cpt">
+          <div style={{display:"flex",alignItems:"center",gap:10}}>
+            <span style={{fontSize:20}}>🔔</span>
+            <div>
+              <div style={{fontWeight:700,fontSize:13}}>✅ تم الوصول إلى نقطة التجميع</div>
+              <div style={{fontSize:12,opacity:.9}}>منطقة: <b>{cpAlert}</b></div>
+              <div style={{fontSize:10,opacity:.75}}>المسافة عن المدرسة: {km(areas.indexOf(cpAlert))} كم</div>
+            </div>
+            <button onClick={()=>setCpAlert(null)} style={{background:"none",border:"none",color:"white",fontSize:16,cursor:"pointer",marginRight:"auto"}}>✕</button>
+          </div>
+        </div>
+      )}
+
+      {/* Sim controls — only for admin testing */}
+      {!fixedEmpId && (
+      <div className="card" style={{marginBottom:14}}>
+        <div className="ctitle">⚙️ محاكاة الحالة (للاختبار — للمدير فقط)</div>
+        <div className="g3">
+          <div className="field"><label>الموظف</label>
+            <select className="sel" value={selId} onChange={e=>{setSelId(Number(e.target.value));setReached([]);}}>
+              {employees.map(e=><option key={e.id} value={e.id}>{e.name}</option>)}
+            </select>
+          </div>
+          <div className="field"><label>الوقت الحالي</label><input type="time" className="inp" value={curT} onChange={e=>setCurT(e.target.value)}/></div>
+          <div className="field"><label>الموقع التجريبي</label>
+            <select className="sel" value={simL} onChange={e=>setSimL(e.target.value)}>
+              <option value="inside">داخل المدرسة</option>
+              <option value="near">قريب من المدرسة</option>
+              <option value="outside">خارج المدرسة</option>
+            </select>
+          </div>
+        </div>
+      </div>
+      )}
+
+      <div className="g2">
+        {/* Left */}
+        <div>
+          {/* Profile */}
+          <div className="card" style={{marginBottom:14}}>
+            <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:14}}>
+              <div style={{width:48,height:48,borderRadius:14,background:"#0f172a",color:"white",display:"flex",alignItems:"center",justifyContent:"center",fontSize:21,fontWeight:900}}>{emp.name[0]}</div>
+              <div style={{flex:1}}>
+                <div style={{fontWeight:800,fontSize:16}}>{emp.name}</div>
+                <div style={{fontSize:12,color:"#64748b"}}>{emp.job}</div>
+              </div>
+              <B t={emp.active?"g":"r"}>{emp.active?"فعّال":"غير فعّال"}</B>
+            </div>
+            <div className="ir"><span>رقم الهاتف</span><span>{emp.phone}</span></div>
+            <div className="ir"><span>الرقم المدني</span><span>{emp.civilId}</span></div>
+            <div style={{marginTop:10}}>
+              <div style={{fontSize:11,fontWeight:700,color:"#334155",marginBottom:5}}>🚌 مناطق التوصيل</div>
+              <div style={{display:"flex",flexWrap:"wrap",gap:3}}>{areas.map((a,i)=><span key={i} className="atag">{i+1}. {a}</span>)}</div>
+            </div>
+          </div>
+
+          {/* Attendance */}
+          <div className="card">
+            <div className="ctitle">📋 تسجيل الحضور والانصراف</div>
+            <div className="g3" style={{marginBottom:12}}>
+              {[[inM,"فترة الحضور","#ecfdf5","#a7f3d0","g"],[inE,"فترة الانصراف","#faf5ff","#e9d5ff","p"],[inside,"الموقع","#ecfdf5","#a7f3d0","g"]].map(([cond,lbl,bg,bd,tone],i)=>(
+                <div key={i} style={{textAlign:"center",background:cond?bg:"#f8fafc",border:`1px solid ${cond?bd:"#e2e8f0"}`,borderRadius:11,padding:10}}>
+                  <div style={{fontSize:10,color:"#64748b",marginBottom:4}}>{lbl}</div>
+                  <B t={cond?tone:"s"}>{cond?"✓ متاحة":"غير متاحة"}</B>
+                </div>
+              ))}
+            </div>
+            <div className={`alt ${inside?"alt-g":"alt-a"}`} style={{marginBottom:12}}>
+              📍 {inside?"وصلت للمدرسة — يمكنك التسجيل إذا كان الوقت مناسباً.":"أنت خارج منطقة المدرسة — سيصدر تنبيه عند الوصول."}
+            </div>
+            <div className="field"><label>ملاحظات</label>
+              <textarea className="inp" rows={2} value={note} onChange={e=>setNote(e.target.value)} placeholder="مهمة خارجية، تأخير بعذر..."/>
+            </div>
+            <div className="flex">
+              <button className="btn btn-s" onClick={()=>doLog("حضور")}>✅ تسجيل الحضور</button>
+              <button className="btn btn-p" onClick={()=>doLog("انصراف")}>🚪 تسجيل الانصراف</button>
+            </div>
+          </div>
+        </div>
+
+        {/* Right */}
+        <div>
+          {/* Tracking status */}
+          <div className="card" style={{marginBottom:14,background:inTrk?"#022c22":"white",border:`1px solid ${inTrk?"#065f46":"#e2e8f0"}`}}>
+            <div className="flex" style={{marginBottom:inTrk?10:0}}>
+              <div style={{width:36,height:36,borderRadius:10,background:inTrk?"rgba(255,255,255,.1)":"#f1f5f9",display:"flex",alignItems:"center",justifyContent:"center",fontSize:17}}>{inTrk?"🟢":"⭕"}</div>
+              <div>
+                <div style={{fontWeight:700,fontSize:13,color:inTrk?"white":"#0f172a"}}>حالة التتبع</div>
+                <div style={{fontSize:11,color:inTrk?"#6ee7b7":"#94a3b8"}}>{inTrk?"مفعّل — يعمل في الخلفية":"خارج وقت التتبع"}</div>
+              </div>
+            </div>
+            {inTrk&&<div style={{fontSize:11,color:"#a7f3d0",lineHeight:2,borderTop:"1px solid rgba(255,255,255,.1)",paddingTop:8}}>
+              <div style={{display:"flex",justifyContent:"space-between"}}><span>بدء التتبع</span><span>{schedules.tracking.start}</span></div>
+              <div style={{display:"flex",justifyContent:"space-between"}}><span>نهاية التتبع</span><span>{schedules.tracking.end}</span></div>
+              <div style={{display:"flex",justifyContent:"space-between"}}><span>الوقت الحالي</span><span>{curT}</span></div>
+            </div>}
+          </div>
+
+          {/* Collection points */}
+          <div className="card" style={{marginBottom:14}}>
+            <div className="ctitle">🚏 نقاط التجميع</div>
+            {areas.map((area,i)=>{
+              const done=reached.includes(area);
+              return(
+                <div key={i} className={`cpi ${done?"r":"p"}`}>
+                  <div className="flex-bt">
+                    <div className="flex">
+                      <span className={`cpn ${done?"r":"p"}`}>{done?"✓":i+1}</span>
+                      <div>
+                        <div style={{fontWeight:600,fontSize:12}}>{area}</div>
+                        <div style={{fontSize:10,color:"#2563eb"}}>📏 {km(i)} كم من المدرسة</div>
+                      </div>
+                    </div>
+                    {!done
+                      ?<button className="btn btn-sm" style={{background:"#0f172a",color:"white",fontSize:10}} onClick={()=>reachArea(area)}>وصلت</button>
+                      :<B t="g">تم ✓</B>}
+                  </div>
+                </div>
+              );
+            })}
+            <p style={{textAlign:"center",fontSize:10,color:"#94a3b8",marginTop:6}}>اضغط "وصلت" عند وصولك لكل نقطة</p>
+          </div>
+
+          {/* Distance */}
+          <div className="card">
+            <div className="ctitle">📍 المسافة عن المدرسة</div>
+            <div style={{textAlign:"center",padding:14}}>
+              <div className="dist-n" style={{color:inside?"#059669":"#dc2626"}}>{dist}</div>
+              <div style={{fontSize:13,color:"#64748b"}}>متر</div>
+              <div style={{marginTop:8}}><B t={inside?"g":"r"}>{inside?"✓ داخل نطاق المدرسة":"✗ خارج نطاق المدرسة"}</B></div>
+              <div style={{fontSize:11,color:"#94a3b8",marginTop:4}}>نطاق المدرسة: {school.radius} م</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── USERS ────────────────────────────────────────────────────
+function UsersView({employees,setEmployees}){
+  const[search,setSearch]=useState("");
+  const[modal,setModal]=useState(false);
+  const[editEmp,setEditEmp]=useState(null);
+  const[form,setForm]=useState({name:"",phone:"",civilId:"",job:"",areas:"",active:true,locId:1,device:"جهاز غير محدد",deviceId:""});
+  const openAdd=()=>{setEditEmp(null);setForm({name:"",phone:"",civilId:"",job:"",areas:"",active:true,locId:1,device:"جهاز غير محدد",deviceId:`DEV-${Date.now()}`});setModal(true);};
+  const openEdit=e=>{setEditEmp(e);setForm({...e});setModal(true);};
+  const save=()=>{
+    if(!form.name||!form.phone||!form.civilId){alert("يرجى ملء الاسم والهاتف والرقم المدني");return;}
+    if(editEmp)setEmployees(p=>p.map(e=>e.id===editEmp.id?{...form,id:editEmp.id}:e));
+    else setEmployees(p=>[{...form,id:Date.now()},...p]);
+    setModal(false);
+    alert(editEmp?"تم تعديل بيانات الموظف":"تم إضافة الموظف بنجاح");
+  };
+  const prevAreas=parseA(form.areas);
+  const filtered=employees.filter(e=>[e.name,e.phone,e.civilId,e.job,e.areas].join(" ").includes(search));
+  return(
+    <div>
+      <div className="card" style={{marginBottom:14}}>
+        <div className="flex-bt" style={{marginBottom:12}}>
+          <div>
+            <div className="ctitle" style={{margin:0}}>إدارة المستخدمين</div>
+            <p style={{fontSize:12,color:"#64748b",marginTop:2}}>إضافة يدوية أو استيراد Excel — مع إدارة مناطق التوصيل</p>
+          </div>
+          <div className="flex">
+            <button className="btn btn-p btn-sm" onClick={openAdd}>➕ إضافة موظف</button>
+            <button className="btn btn-o btn-sm" onClick={()=>alert("في النسخة الكاملة يتم استيراد ملف Excel")}>📥 Excel</button>
+            <button className="btn btn-o btn-sm" onClick={()=>alert("تم تصدير البيانات")}>📤 تصدير</button>
+          </div>
+        </div>
+        <div style={{display:"flex",alignItems:"center",gap:8,border:"1px solid #e2e8f0",borderRadius:9,padding:"7px 11px",background:"white"}}>
+          <span>🔍</span>
+          <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="بحث بالاسم أو الهاتف أو الرقم المدني أو المنطقة..." style={{border:"none",outline:"none",flex:1,fontSize:12,fontFamily:"inherit",background:"transparent"}}/>
+        </div>
+      </div>
+      <div className="twrap">
+        <table>
+          <thead><tr>
+            <th>#</th><th>الاسم</th><th>رقم الهاتف</th><th>الرقم المدني</th><th>المهنة</th>
+            <th>مناطق التوصيل</th><th>الحالة</th><th>الجهاز (للمدير فقط)</th><th>إجراءات</th>
+          </tr></thead>
+          <tbody>
+            {filtered.map((e,i)=>(
+              <tr key={e.id} className={!e.active?"trej":""}>
+                <td style={{color:"#94a3b8"}}>{i+1}</td>
+                <td style={{fontWeight:600}}>{e.name}</td>
+                <td style={{fontSize:11}}>{e.phone}</td>
+                <td style={{fontSize:11}}>{e.civilId}</td>
+                <td><B t="p">{e.job}</B></td>
+                <td><div style={{display:"flex",flexWrap:"wrap",gap:2}}>{parseA(e.areas).map((a,j)=><span key={j} className="atag" style={{fontSize:10}}>{a}</span>)}</div></td>
+                <td><button onClick={()=>setEmployees(p=>p.map(x=>x.id===e.id?{...x,active:!x.active}:x))} style={{background:"none",border:"none",cursor:"pointer"}}><B t={e.active?"g":"r"}>{e.active?"فعّال":"غير فعّال"}</B></button></td>
+                <td style={{fontSize:10,color:"#64748b"}}>{e.device}<br/><span style={{fontFamily:"monospace",color:"#94a3b8"}}>{e.deviceId}</span></td>
+                <td>
+                  <div className="flex">
+                    <button className="btn btn-o btn-sm" onClick={()=>openEdit(e)}>✏️ تعديل</button>
+                    <button className="btn btn-w btn-sm" onClick={()=>alert("تمت إعادة صلاحية الهاتف")}>📱 إعادة الهاتف</button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {modal&&(
+        <div className="mov" onClick={e=>e.target===e.currentTarget&&setModal(false)}>
+          <div className="modal">
+            <div className="mh"><h3>{editEmp?"تعديل بيانات الموظف":"إضافة موظف جديد"}</h3><button className="mcls" onClick={()=>setModal(false)}>✕</button></div>
+            <div className="mbody">
+              <div className="g2">
+                <div className="field"><label>الاسم الكامل *</label><input className="inp" value={form.name} onChange={e=>setForm(f=>({...f,name:e.target.value}))} placeholder="اسم الموظف"/></div>
+                <div className="field"><label>رقم الهاتف *</label><input className="inp" value={form.phone} onChange={e=>setForm(f=>({...f,phone:e.target.value}))} placeholder="968XXXXXXXX"/></div>
+                <div className="field"><label>الرقم المدني *</label><input className="inp" value={form.civilId} onChange={e=>setForm(f=>({...f,civilId:e.target.value}))} placeholder="رقم البطاقة المدنية"/></div>
+                <div className="field"><label>المهنة / الوظيفة</label><input className="inp" value={form.job} onChange={e=>setForm(f=>({...f,job:e.target.value}))} placeholder="سائق حافلة، مشرفة..."/></div>
+              </div>
+              <div className="field">
+                <label>مناطق التوصيل (افصل بشرطة -)</label>
+                <input className="inp" value={form.areas} onChange={e=>setForm(f=>({...f,areas:e.target.value}))} placeholder="المسيلة-الشعبية-الصمية-الخوير"/>
+                <p style={{fontSize:10,color:"#94a3b8",marginTop:3}}>كل منطقة وبينها شرطة — تظهر للموظف كنقاط تجميع مرتبة</p>
+              </div>
+              {prevAreas.length>0&&(
+                <div style={{background:"#eff6ff",border:"1px solid #bfdbfe",borderRadius:10,padding:10,marginBottom:12}}>
+                  <p style={{fontSize:11,fontWeight:700,color:"#1d4ed8",marginBottom:5}}>معاينة نقاط التجميع:</p>
+                  <div style={{display:"flex",flexWrap:"wrap",gap:3}}>{prevAreas.map((a,i)=><span key={i} className="atag">{i+1}. {a}</span>)}</div>
+                </div>
+              )}
+              <div style={{display:"flex",alignItems:"center",gap:7}}>
+                <input type="checkbox" id="act" checked={form.active} onChange={e=>setForm(f=>({...f,active:e.target.checked}))}/>
+                <label htmlFor="act" style={{fontSize:12,fontWeight:500,cursor:"pointer"}}>الحساب فعّال</label>
+              </div>
+            </div>
+            <div className="mfoot">
+              <button className="btn btn-o" onClick={()=>setModal(false)}>إلغاء</button>
+              <button className="btn btn-s" onClick={save}>✅ {editEmp?"حفظ التعديلات":"إضافة الموظف"}</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── TIMES ────────────────────────────────────────────────────
+function TimesView({schedules,setSchedules}){
+  const upd=(s,k,v)=>setSchedules(p=>({...p,[s]:{...p[s],[k]:v}}));
+  return(
+    <div>
+      <div className="g2" style={{marginBottom:14}}>
+        <div className="card">
+          <div className="ctitle">🌅 فترة الحضور الصباحي</div>
+          <div className="g2">
+            <div className="field"><label>البداية</label><input type="time" className="inp" value={schedules.morning.start} onChange={e=>upd("morning","start",e.target.value)}/></div>
+            <div className="field"><label>النهاية</label><input type="time" className="inp" value={schedules.morning.end} onChange={e=>upd("morning","end",e.target.value)}/></div>
+            <div className="field"><label>سماح قبل (دقيقة)</label><input type="number" className="inp" value={schedules.morning.gb} onChange={e=>upd("morning","gb",Number(e.target.value))}/></div>
+            <div className="field"><label>سماح بعد (دقيقة)</label><input type="number" className="inp" value={schedules.morning.ga} onChange={e=>upd("morning","ga",Number(e.target.value))}/></div>
+          </div>
+          <div className="alt alt-b" style={{fontSize:11}}>فترة الصباح مخصصة دائماً لتسجيل الحضور فقط</div>
+        </div>
+        <div className="card">
+          <div className="ctitle">🌇 فترة الانصراف المسائي</div>
+          <div className="g2">
+            <div className="field"><label>البداية</label><input type="time" className="inp" value={schedules.evening.start} onChange={e=>upd("evening","start",e.target.value)}/></div>
+            <div className="field"><label>النهاية</label><input type="time" className="inp" value={schedules.evening.end} onChange={e=>upd("evening","end",e.target.value)}/></div>
+            <div className="field"><label>سماح قبل (دقيقة)</label><input type="number" className="inp" value={schedules.evening.gb} onChange={e=>upd("evening","gb",Number(e.target.value))}/></div>
+            <div className="field"><label>سماح بعد (دقيقة)</label><input type="number" className="inp" value={schedules.evening.ga} onChange={e=>upd("evening","ga",Number(e.target.value))}/></div>
+          </div>
+          <div className="alt alt-b" style={{fontSize:11}}>فترة المساء مخصصة دائماً لتسجيل الانصراف فقط</div>
+          <button className="btn btn-s" style={{marginTop:10}} onClick={()=>alert("تم حفظ الإعدادات")}>💾 حفظ</button>
+        </div>
+      </div>
+      <div className="card">
+        <div className="flex-bt" style={{marginBottom:12}}>
+          <div className="ctitle" style={{margin:0}}>📋 أوقات الانصراف الإضافية</div>
+          <button className="btn btn-p btn-sm" onClick={()=>setSchedules(p=>({...p,extra:[...p.extra,{id:Date.now(),name:"انصراف جديد",start:"14:00",end:"14:30",app:false,out:false}]}))}>➕ إضافة</button>
+        </div>
+        <div className="g3">
+          {schedules.extra.map(s=>(
+            <div key={s.id} style={{border:"1px solid #e2e8f0",borderRadius:12,padding:14}}>
+              <div style={{fontWeight:700,marginBottom:3}}>{s.name}</div>
+              <div style={{fontSize:11,color:"#64748b",marginBottom:8}}>{s.start} - {s.end}</div>
+              <div className="flex"><B t={s.app?"a":"g"}>{s.app?"يحتاج موافقة":"تلقائي"}</B><B t={s.out?"b":"s"}>{s.out?"يسمح خارج":"داخل فقط"}</B></div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── REPORTS ──────────────────────────────────────────────────
+function ReportsView({logs,employees,exportCsv}){
+  const[filter,setFilter]=useState("الكل");
+  const[empF,setEmpF]=useState("الكل");
+  const[df,setDf]=useState("");
+  const[dt,setDt]=useState("");
+  const shown=logs.filter(l=>{
+    if(filter!=="الكل"&&l.st!==filter&&l.type!==filter)return false;
+    if(empF!=="الكل"&&l.eName!==empF)return false;
+    if(df&&l.date<df)return false;
+    if(dt&&l.date>dt)return false;
+    return true;
+  });
+  const gE=id=>employees.find(e=>e.id===id);
+
+  return(
+    <div>
+      <div className="card" style={{marginBottom:14}}>
+        <div className="flex-bt" style={{marginBottom:12}}>
+          <div className="ctitle" style={{margin:0}}>📋 التقارير الكاملة</div>
+          <div className="flex">
+            <button className="btn btn-o btn-sm" onClick={exportCsv}>📊 Excel/CSV</button>
+            <button className="btn btn-o btn-sm" onClick={()=>window.print()}>📄 PDF</button>
+          </div>
+        </div>
+        <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"flex-end",marginBottom:10}}>
+          {[["نوع/حالة",filter,setFilter,["الكل","مقبول","مرفوض","حضور","انصراف"]],
+            ["الموظف",empF,setEmpF,["الكل",...employees.map(e=>e.name)]]].map(([lbl,val,set,opts],i)=>(
+            <div key={i}>
+              <div style={{fontSize:10,color:"#64748b",marginBottom:3}}>{lbl}</div>
+              <select className="sel" style={{width:"auto"}} value={val} onChange={e=>set(e.target.value)}>
+                {opts.map(o=><option key={o}>{o}</option>)}
+              </select>
+            </div>
+          ))}
+          <div><div style={{fontSize:10,color:"#64748b",marginBottom:3}}>من تاريخ</div><input type="date" className="inp" style={{width:"auto"}} value={df} onChange={e=>setDf(e.target.value)}/></div>
+          <div><div style={{fontSize:10,color:"#64748b",marginBottom:3}}>إلى تاريخ</div><input type="date" className="inp" style={{width:"auto"}} value={dt} onChange={e=>setDt(e.target.value)}/></div>
+        </div>
+        <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+          {[["إجمالي","#475569",shown.length],["مقبول","#059669",shown.filter(l=>l.st==="مقبول").length],["مرفوض","#dc2626",shown.filter(l=>l.st==="مرفوض").length],["حضور","#2563eb",shown.filter(l=>l.type==="حضور").length],["انصراف","#9333ea",shown.filter(l=>l.type==="انصراف").length]].map(([lb,cl,vl])=>(
+            <span key={lb} style={{background:cl+"18",border:`1px solid ${cl}40`,color:cl,borderRadius:20,padding:"3px 10px",fontSize:11,fontWeight:600}}>{lb}: {vl}</span>
+          ))}
+        </div>
+      </div>
+
+      {/* Table */}
+      <div className="twrap" style={{marginBottom:20}}>
+        <table style={{minWidth:1000}}>
+          <thead><tr>
+            <th>الاسم</th><th>الهاتف</th><th>الرقم المدني</th><th>المهنة</th>
+            <th>التاريخ</th><th>الوقت</th><th>العملية</th><th>الحالة</th>
+            <th>السبب</th><th>الموقع/المسافة</th><th>الجهاز</th><th>ملاحظات</th>
+          </tr></thead>
+          <tbody>
+            {shown.map((l,i)=>{
+              const emp=gE(l.eId);
+              return(
+                <tr key={l.id} className={l.st==="مرفوض"?"trej":""}>
+                  <td style={{fontWeight:600}}>{l.eName}</td>
+                  <td style={{fontSize:10}}>{emp?.phone||"—"}</td>
+                  <td style={{fontSize:10}}>{emp?.civilId||"—"}</td>
+                  <td><B t="p">{emp?.job||"—"}</B></td>
+                  <td style={{fontWeight:600,fontSize:12}}>{l.date}</td>
+                  <td style={{fontWeight:900,fontSize:14,fontFamily:"Tajawal"}}>{l.time}</td>
+                  <td><B t={l.type==="حضور"?"b":"p"}>{l.type}</B></td>
+                  <td><B t={l.st==="مقبول"?"g":"r"}>{l.st}</B></td>
+                  <td style={{fontSize:11}}>{l.reason}</td>
+                  <td style={{fontSize:11}}>
+                    <div style={{color:l.inside?"#059669":"#dc2626",fontWeight:600}}>{l.inside?"✓ داخل":"✗ خارج"}</div>
+                    <div style={{color:"#94a3b8"}}>{l.dist} م</div>
+                  </td>
+                  <td style={{fontSize:10,color:"#64748b"}}>{l.device}</td>
+                  <td style={{fontSize:11,color:"#64748b"}}>{l.notes||"—"}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Per-emp trip report */}
+      <div className="ctitle">📍 تقرير رحلة كل موظف</div>
+      {employees.map(emp=>{
+        const trip=TRIP[emp.id];if(!trip)return null;
+        const areas=parseA(emp.areas);
+        const rN=trip.areas.filter(a=>a.r).length;
+        return(
+          <div key={emp.id} className="repcard">
+            <div className="repcard-h">
+              <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
+                <div style={{width:40,height:40,borderRadius:11,background:"rgba(255,255,255,.1)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:19,fontWeight:900}}>{emp.name[0]}</div>
+                <div style={{flex:1}}>
+                  <h3>{emp.name}</h3>
+                  <p>{emp.job} · {emp.phone} · 🪪 {emp.civilId}</p>
+                </div>
+                <B t={emp.active?"g":"r"}>{emp.active?"فعّال":"غير فعّال"}</B>
+              </div>
+              <div style={{display:"flex",flexWrap:"wrap",gap:3,marginBottom:10}}>
+                <span style={{fontSize:10,color:"#94a3b8",marginLeft:3}}>المناطق:</span>
+                {areas.map((a,i)=><span key={i} style={{background:"rgba(255,255,255,.1)",color:"white",borderRadius:20,padding:"2px 8px",fontSize:10}}>{i+1}. {a}</span>)}
+              </div>
+              <div className="rmg">
+                <div className="rmi" style={{background:trip.ci.done&&trip.ci.st==="مقبول"?"rgba(5,150,105,.3)":trip.ci.done?"rgba(220,38,38,.3)":"rgba(255,255,255,.08)"}}>
+                  <div className="lbl">الحضور</div><div className="val">{trip.ci.done?trip.ci.time:"لم يسجّل"}</div>
+                </div>
+                <div className="rmi"><div className="lbl">التاريخ</div><div className="val" style={{fontSize:10}}>{trip.ci.date||"—"}</div></div>
+                <div className="rmi"><div className="lbl">نقاط التجميع</div><div className="val">{rN}/{trip.areas.length}</div></div>
+              </div>
+            </div>
+            <div className="repcard-b">
+              <div className="g3">
+                {/* Check-in */}
+                <div>
+                  <div style={{fontWeight:700,fontSize:11,marginBottom:7,color:"#334155"}}>🕐 تفاصيل الحضور</div>
+                  {trip.ci.done?(
+                    <div style={{background:"#f8fafc",border:"1px solid #e2e8f0",borderRadius:9,padding:10,fontSize:11,lineHeight:1.9}}>
+                      <div><b>التاريخ:</b> {trip.ci.date}</div>
+                      <div><b>الوقت:</b> {trip.ci.time}</div>
+                      <div><b>الموقع:</b> {trip.ci.loc}</div>
+                      <div><b>المسافة:</b> {trip.ci.dist} م</div>
+                      <div style={{marginTop:4}}><B t={trip.ci.st==="مقبول"?"g":"r"}>{trip.ci.st}</B></div>
+                    </div>
+                  ):<div className="alt alt-a" style={{fontSize:11}}>لم يتم تسجيل الحضور</div>}
+                </div>
+                {/* Areas */}
+                <div>
+                  <div style={{fontWeight:700,fontSize:11,marginBottom:7,color:"#334155"}}>📍 نقاط التجميع ({rN}/{areas.length})</div>
+                  {trip.areas.map((a,i)=>(
+                    <div key={i} style={{background:a.r?"#ecfdf5":"#f8fafc",border:`1px solid ${a.r?"#a7f3d0":"#e2e8f0"}`,borderRadius:9,padding:"7px 9px",marginBottom:5}}>
+                      <div style={{display:"flex",alignItems:"center",gap:5,marginBottom:a.r?3:0}}>
+                        <span style={{width:18,height:18,borderRadius:"50%",background:a.r?"#059669":"#cbd5e1",color:"white",display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:9,fontWeight:700,flexShrink:0}}>{a.r?"✓":i+1}</span>
+                        <span style={{fontWeight:600,fontSize:11}}>{a.name}</span>
+                        <span style={{marginRight:"auto",fontSize:10,color:"#2563eb"}}>{a.km}</span>
+                      </div>
+                      {a.r&&<div style={{fontSize:10,color:"#475569",paddingRight:24,lineHeight:1.7}}><b>{a.date}</b> — <b>{a.time}</b>{a.loc&&<span> · {a.loc}</span>}</div>}
+                    </div>
+                  ))}
+                </div>
+                {/* Rejected */}
+                <div>
+                  <div style={{fontWeight:700,fontSize:11,marginBottom:7,color:"#334155"}}>❌ العمليات المرفوضة ({trip.rej.length})</div>
+                  {trip.rej.length===0
+                    ?<div className="alt alt-g" style={{fontSize:11}}>✓ لا توجد عمليات مرفوضة</div>
+                    :trip.rej.map((r,i)=>(
+                      <div key={i} style={{background:"#fef2f2",border:"1px solid #fecaca",borderRadius:9,padding:9,marginBottom:7}}>
+                        <div style={{fontWeight:700,fontSize:10,color:"#b91c1c",marginBottom:3}}>محاولة #{i+1}</div>
+                        <div style={{fontSize:10,color:"#dc2626",lineHeight:1.8}}>
+                          <div><b>التاريخ:</b> {r.date} — <b>الوقت:</b> {r.time}</div>
+                          <div><b>السبب:</b> {r.reason}</div>
+                          <div><b>الموقع:</b> {r.loc}</div>
+                          <div><b>المسافة:</b> {r.dist} م</div>
+                        </div>
+                      </div>
+                    ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── SECURITY ─────────────────────────────────────────────────
+function SecurityView(){
+  const items=[
+    ["🔒","بوابة GPS إلزامية","لا يمكن فتح التطبيق بدون تفعيل GPS والتتبع معاً"],
+    ["📱","Device Fingerprint مُركّب","IMEI + MAC + Serial + UUID — فريد حتى لو نفس طراز الهاتف"],
+    ["🔑","اعتماد أول هاتف","يُربط أول جهاز يدخل برقم الموظف — يتغير فقط بإذن المدير"],
+    ["🚫","منع Fake GPS","كشف GPS المزيف — يتطلب تطبيق موبايل في النسخة الكاملة"],
+    ["📍","التسجيل يتطلب الموقع","داخل النطاق الجغرافي المحدد للمدرسة"],
+    ["📜","سجل نشاطات المدير","كل تعديل وتصدير وتفعيل يُسجَّل مع التاريخ والوقت"],
+    ["⏰","تتبع مقيّد بالدوام","لا تتبع خارج الأوقات التي يحددها المدير"],
+    ["🔄","العمل بدون إنترنت","مزامنة لاحقة عند عودة الإنترنت مع تمييز السجل"],
+  ];
+  return(
+    <div className="g2">
+      {items.map(([ic,tt,dd])=>(
+        <div key={tt} className="card">
+          <div style={{display:"flex",gap:10,alignItems:"flex-start"}}>
+            <div style={{width:40,height:40,borderRadius:11,background:"#ecfdf5",display:"flex",alignItems:"center",justifyContent:"center",fontSize:19,flexShrink:0}}>{ic}</div>
+            <div><div style={{fontWeight:700,fontSize:13,marginBottom:3}}>{tt}</div><div style={{fontSize:11,color:"#64748b",lineHeight:1.6}}>{dd}</div></div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ── ROOT ─────────────────────────────────────────────────────
+function App(){
+  // steps: "login" → "gps" → "app"
+  const[step,     setStep]     = useState("login");
+  const[user,     setUser]     = useState(null);   // {role, name, phone, ...emp}
+  const[screen,   setScreen]   = useState("dashboard");
+  const[employees,setEmployees]= useState(EMPS0);
+  const[schools]               = useState(SCHLS0);
+  const[schedules,setSchedules]= useState(SCH0);
+  const[logs,     setLogs]     = useState(LOGS0);
+
+  const stats=useMemo(()=>({
+    total:employees.length,active:employees.filter(e=>e.active).length,
+    accepted:logs.filter(l=>l.st==="مقبول").length,rejected:logs.filter(l=>l.st==="مرفوض").length,
+  }),[logs,employees]);
+
+  function onLogin(u){
+    setUser(u);
+    setStep("gps");
+    // Admin goes directly to dashboard, employee to their view
+    setScreen(u.role==="admin" ? "dashboard" : "employee");
+  }
+
+  function onLogout(){
+    setUser(null);
+    setStep("login");
+    setScreen("dashboard");
+  }
+
+  function exportCsv(){
+    const h=["الاسم","النوع","الحالة","السبب","التاريخ","الوقت","المسافة","داخل","ملاحظات","الجهاز"];
+    const r=logs.map(l=>[l.eName,l.type,l.st,l.reason,l.date,l.time,`${l.dist}م`,l.inside?"نعم":"لا",l.notes||"",l.device]);
+    const csv=[h,...r].map(row=>row.map(v=>`"${String(v||"").replaceAll('"','""')}"`).join(",")).join("\n");
+    const a=document.createElement("a");
+    a.href=URL.createObjectURL(new Blob(["\ufeff"+csv],{type:"text/csv;charset=utf-8"}));
+    a.download=`attendance_${new Date().toISOString().slice(0,10)}.csv`;a.click();
+    alert("تم تصدير الملف بنجاح");
+  }
+
+  // ── Step 1: Login ──
+  if(step==="login") return <LoginScreen employees={employees} onLogin={onLogin}/>;
+
+  // ── Step 2: GPS Gate ──
+  if(step==="gps") return <GpsGate onAllow={()=>setStep("app")}/>;
+
+  // ── Step 3: Main App ──
+
+  // Admin navigation
+  const ADMIN_NAV=[
+    {id:"dashboard",ic:"🏠",lb:"لوحة المدير"},
+    {id:"employee", ic:"👤",lb:"واجهة الموظف"},
+    {id:"users",    ic:"👥",lb:"المستخدمون"},
+    {id:"times",    ic:"⏰",lb:"الأوقات"},
+    {id:"reports",  ic:"📋",lb:"التقارير"},
+    {id:"security", ic:"🔒",lb:"الأمان"},
+  ];
+
+  // Employee sees only their own view — no sidebar
+  if(user.role==="employee"){
+    return(
+      <div>
+        {/* Employee top bar */}
+        <div style={{background:"white",borderBottom:"1px solid #e2e8f0",padding:"12px 20px",display:"flex",alignItems:"center",justifyContent:"space-between",position:"sticky",top:0,zIndex:50}}>
+          <div style={{display:"flex",alignItems:"center",gap:10}}>
+            <div style={{width:36,height:36,borderRadius:10,background:"#0f172a",color:"white",display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,fontWeight:900}}>{user.name[0]}</div>
+            <div>
+              <div style={{fontWeight:700,fontSize:14}}>{user.name}</div>
+              <div style={{fontSize:11,color:"#64748b"}}>{user.job} · {user.phone}</div>
+            </div>
+          </div>
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            <B t="g">✅ GPS مفعّل</B>
+            <button className="logout-btn" onClick={onLogout}>🚪 خروج</button>
+          </div>
+        </div>
+
+        <div style={{padding:"16px"}}>
+          <EmpView
+            employees={employees}
+            logs={logs}
+            setLogs={setLogs}
+            schools={schools}
+            schedules={schedules}
+            fixedEmpId={user.id}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  // Admin full dashboard
+  const cur=ADMIN_NAV.find(n=>n.id===screen);
+  return(
+    <div className="app">
+      {/* Sidebar */}
+      <div className="sidebar">
+        <div className="sb-brand">
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            <span style={{fontSize:18}}>🏫</span>
+            <div><h1>نظام المدرسة</h1><p>لوحة المدير</p></div>
+          </div>
+        </div>
+        {/* Admin info */}
+        <div style={{margin:"0 10px 12px",background:"#eff6ff",border:"1px solid #bfdbfe",borderRadius:10,padding:"10px 12px",fontSize:12}}>
+          <div style={{fontWeight:700,color:"#1d4ed8"}}>⚙️ {user.name}</div>
+          <div style={{color:"#2563eb",fontSize:11,marginTop:1}}>📱 {user.phone}</div>
+        </div>
+        {ADMIN_NAV.map(n=>(
+          <button key={n.id} className={`nav-btn ${screen===n.id?"on":""}`} onClick={()=>setScreen(n.id)}>
+            <span className="nav-icon">{n.ic}</span>{n.lb}
+          </button>
+        ))}
+        <div style={{margin:"12px 10px 0",background:"#ecfdf5",border:"1px solid #a7f3d0",borderRadius:10,padding:"8px 10px",fontSize:10,color:"#065f46"}}>✅ GPS والتتبع مفعّلان</div>
+        <div style={{margin:"8px 10px 0"}}>
+          <button className="logout-btn" style={{width:"100%",justifyContent:"center"}} onClick={onLogout}>🚪 تسجيل الخروج</button>
+        </div>
+      </div>
+
+      {/* Main */}
+      <div className="main">
+        {/* Mobile nav */}
+        <div className="mob-sel">
+          <select className="sel" value={screen} onChange={e=>setScreen(e.target.value)}>
+            {ADMIN_NAV.map(n=><option key={n.id} value={n.id}>{n.ic} {n.lb}</option>)}
+          </select>
+          <button className="logout-btn" onClick={onLogout}>🚪 خروج</button>
+        </div>
+
+        {/* Header */}
+        <div className="pheader">
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,flexWrap:"wrap"}}>
+            <div>
+              <h2>{cur?.ic} {cur?.lb}</h2>
+              <p>مرحباً {user.name} — نظام حضور وانصراف وتتبع ميداني</p>
+            </div>
+            <div className="flex"><B t="g">✅ GPS مفعّل</B><B t="b">🗺️ التتبع مفعّل</B></div>
+          </div>
+          <div className="toast">🔔 البيانات تجريبية محلية — في النسخة الكاملة مع Firebase تُحفظ وتُشارك بين الأجهزة.</div>
+        </div>
+
+        {/* Pages */}
+        {screen==="dashboard"&&<Dashboard stats={stats} logs={logs} employees={employees} exportCsv={exportCsv}/>}
+        {screen==="employee" &&<EmpView employees={employees} logs={logs} setLogs={setLogs} schools={schools} schedules={schedules}/>}
+        {screen==="users"    &&<UsersView employees={employees} setEmployees={setEmployees}/>}
+        {screen==="times"    &&<TimesView schedules={schedules} setSchedules={setSchedules}/>}
+        {screen==="reports"  &&<ReportsView logs={logs} employees={employees} exportCsv={exportCsv}/>}
+        {screen==="security" &&<SecurityView/>}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
