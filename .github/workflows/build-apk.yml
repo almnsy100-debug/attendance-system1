@@ -1,4 +1,4 @@
-name: Build SmartChem Track v2.0.5 Fixed
+name: Build SmartChem Track v2.0.6 Diagnosable
 
 on:
   push:
@@ -43,7 +43,9 @@ jobs:
 
       - name: Recover SmartChem source code
         run: |
-          git show 6d42435be12542515caf96302668edf79b250e80:.github/workflows/build-apk.yml > /tmp/old-smartchem-workflow.yml
+          git show \
+            6d42435be12542515caf96302668edf79b250e80:.github/workflows/build-apk.yml \
+            > /tmp/old-smartchem-workflow.yml
 
           awk '
             /cat > pubspec.yaml/ {
@@ -58,7 +60,8 @@ jobs:
             capture {
               print
             }
-          ' /tmp/old-smartchem-workflow.yml > smartchem_safe/pubspec.yaml
+          ' /tmp/old-smartchem-workflow.yml \
+            > smartchem_safe/pubspec.yaml
 
           awk '
             /cat > lib\/main.dart/ {
@@ -73,7 +76,8 @@ jobs:
             capture {
               print
             }
-          ' /tmp/old-smartchem-workflow.yml > smartchem_safe/lib/main.dart
+          ' /tmp/old-smartchem-workflow.yml \
+            > smartchem_safe/lib/main.dart
 
           test -s smartchem_safe/pubspec.yaml
           test -s smartchem_safe/lib/main.dart
@@ -84,18 +88,19 @@ jobs:
           echo "main.dart lines:"
           wc -l smartchem_safe/lib/main.dart
 
-      - name: Update application version and scanner
+      - name: Configure compatible package versions
         run: |
           sed -i \
-            's/version: 2.0.4+6/version: 2.0.5+7/' \
+            's/version: 2.0.4+6/version: 2.0.6+8/' \
             smartchem_safe/pubspec.yaml
 
-          sed -i \
-            's/mobile_scanner: 5.2.3/mobile_scanner: 7.2.1/' \
+          sed -i -E \
+            's/mobile_scanner:[[:space:]]*[0-9.]+/mobile_scanner: 5.2.3/' \
             smartchem_safe/pubspec.yaml
 
           rm -f smartchem_safe/analysis_options.yaml
 
+          echo "Final pubspec:"
           cat smartchem_safe/pubspec.yaml
 
       - name: Install Flutter packages
@@ -105,23 +110,34 @@ jobs:
           flutter pub get
           flutter pub deps
 
-      - name: Configure Android camera permission
+      - name: Configure Android manifest
         working-directory: smartchem_safe
         run: |
           MANIFEST="android/app/src/main/AndroidManifest.xml"
 
-          sed -i \
-            '/<manifest/a\    <uses-feature android:name="android.hardware.camera.any" android:required="false" />' \
-            "$MANIFEST"
+          if ! grep -q \
+            'android.permission.CAMERA' \
+            "$MANIFEST"; then
+
+            sed -i \
+              '/<manifest/a\    <uses-permission android:name="android.permission.CAMERA" />' \
+              "$MANIFEST"
+          fi
+
+          if ! grep -q \
+            'android.hardware.camera.any' \
+            "$MANIFEST"; then
+
+            sed -i \
+              '/<manifest/a\    <uses-feature android:name="android.hardware.camera.any" android:required="false" />' \
+              "$MANIFEST"
+          fi
 
           sed -i \
-            '/<manifest/a\    <uses-permission android:name="android.permission.CAMERA" />' \
+            's/android:label="smartchem_safe"/android:label="SmartChem Track v2.0.6"/' \
             "$MANIFEST"
 
-          sed -i \
-            's/android:label="smartchem_safe"/android:label="SmartChem Track v2.0.5"/' \
-            "$MANIFEST"
-
+          echo "Final manifest:"
           cat "$MANIFEST"
 
       - name: Configure Android package
@@ -129,20 +145,21 @@ jobs:
         run: |
           GRADLE_FILE="android/app/build.gradle.kts"
 
-          if [ -f "$GRADLE_FILE" ]; then
-            sed -i \
-              's/applicationId = "om.smartchem.smartchem_safe"/applicationId = "om.smartchem.track.v205"/' \
-              "$GRADLE_FILE"
-
-            sed -i \
-              's/minSdk = flutter.minSdkVersion/minSdk = 23/' \
-              "$GRADLE_FILE"
-
-            cat "$GRADLE_FILE"
-          else
+          if [ ! -f "$GRADLE_FILE" ]; then
             echo "build.gradle.kts was not found"
             exit 1
           fi
+
+          sed -i \
+            's/applicationId = "om.smartchem.smartchem_safe"/applicationId = "om.smartchem.track.v206"/' \
+            "$GRADLE_FILE"
+
+          sed -i \
+            's/minSdk = flutter.minSdkVersion/minSdk = 23/' \
+            "$GRADLE_FILE"
+
+          echo "Final Gradle configuration:"
+          cat "$GRADLE_FILE"
 
       - name: Verify recovered source
         working-directory: smartchem_safe
@@ -152,41 +169,84 @@ jobs:
 
           grep -q "void main()" lib/main.dart
           grep -q "MobileScanner" lib/main.dart
-          grep -q "mobile_scanner" pubspec.yaml
+          grep -q "mobile_scanner: 5.2.3" pubspec.yaml
 
-          echo "SmartChem source verification passed"
+          echo "Source verification passed"
 
-      - name: Build release APK
+      - name: Build release APK and capture log
         working-directory: smartchem_safe
         run: |
+          set +e
+
           flutter build apk \
             --release \
-            --build-name=2.0.5 \
-            --build-number=7
+            --build-name=2.0.6 \
+            --build-number=8 \
+            2>&1 | tee ../smartchem-build.log
+
+          BUILD_STATUS=${PIPESTATUS[0]}
+
+          echo "$BUILD_STATUS" \
+            > ../smartchem-build-status.txt
+
+          tail -n 350 \
+            ../smartchem-build.log \
+            > ../smartchem-build-tail.log
+
+          echo "Build status: $BUILD_STATUS"
+
+          exit 0
+
+      - name: Upload build diagnostic log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: SmartChemTrack-Build-Log
+          path: |
+            smartchem-build.log
+            smartchem-build-tail.log
+            smartchem-build-status.txt
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Check build result
+        run: |
+          BUILD_STATUS=$(
+            cat smartchem-build-status.txt
+          )
+
+          if [ "$BUILD_STATUS" -ne 0 ]; then
+            echo "Flutter build failed."
+            echo "Exact final error:"
+            cat smartchem-build-tail.log
+            exit "$BUILD_STATUS"
+          fi
+
+          echo "Flutter build succeeded"
 
       - name: Verify APK
         run: |
           APK_PATH="smartchem_safe/build/app/outputs/flutter-apk/app-release.apk"
 
           if [ ! -f "$APK_PATH" ]; then
-            echo "APK file was not created"
+            echo "APK was not created"
             exit 1
           fi
 
           ls -lh "$APK_PATH"
 
-      - name: Rename APK
+      - name: Copy APK
         run: |
           cp \
             smartchem_safe/build/app/outputs/flutter-apk/app-release.apk \
-            SmartChemTrack-v2.0.5.apk
+            SmartChemTrack-v2.0.6.apk
 
-          ls -lh SmartChemTrack-v2.0.5.apk
+          ls -lh SmartChemTrack-v2.0.6.apk
 
-      - name: Upload APK artifact
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: SmartChemTrack-v2.0.5-APK
-          path: SmartChemTrack-v2.0.5.apk
+          name: SmartChemTrack-v2.0.6-APK
+          path: SmartChemTrack-v2.0.6.apk
           retention-days: 30
           if-no-files-found: error
