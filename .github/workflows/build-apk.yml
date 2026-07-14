@@ -1,4 +1,4 @@
-name: Build SmartChem APK
+name: Build SmartChem Track v2
 
 on:
   push:
@@ -10,12 +10,12 @@ permissions:
   contents: read
 
 jobs:
-  build-apk:
+  build-v2:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Install Flutter
@@ -25,18 +25,25 @@ jobs:
           cache: true
 
       - name: Create Android application
-        run: flutter create smartchem_app --platforms=android --org om.smartchem --project-name smartchem_track
+        run: |
+          flutter create smartchem_v2 \
+            --platforms=android \
+            --org om.smartchem \
+            --project-name smartchem_track_v2
 
-      - name: Add barcode scanner
-        working-directory: smartchem_app
-        run: flutter pub add mobile_scanner
+      - name: Add packages
+        working-directory: smartchem_v2
+        run: |
+          flutter pub add mobile_scanner
+          flutter pub add intl
 
-      - name: Write SmartChem application
-        working-directory: smartchem_app
+      - name: Write SmartChem v2 code
+        working-directory: smartchem_v2
         shell: bash
         run: |
           cat > lib/main.dart <<'DART'
           import 'package:flutter/material.dart';
+          import 'package:intl/intl.dart';
           import 'package:mobile_scanner/mobile_scanner.dart';
 
           void main() {
@@ -50,331 +57,528 @@ jobs:
             Widget build(BuildContext context) {
               return MaterialApp(
                 debugShowCheckedModeBanner: false,
-                title: 'SmartChem Track',
+                title: 'SmartChem Track v2',
+                builder: (context, child) {
+                  return Directionality(
+                    textDirection: TextDirection.rtl,
+                    child: child ?? const SizedBox.shrink(),
+                  );
+                },
                 theme: ThemeData(
                   useMaterial3: true,
                   colorScheme: ColorScheme.fromSeed(
                     seedColor: const Color(0xFF006C70),
                   ),
+                  scaffoldBackgroundColor: const Color(0xFFF4F8F8),
+                  inputDecorationTheme: const InputDecorationTheme(
+                    border: OutlineInputBorder(),
+                    filled: true,
+                  ),
                 ),
-                builder: (context, child) {
-                  return Directionality(
-                    textDirection: TextDirection.rtl,
-                    child: child ?? const SizedBox(),
-                  );
-                },
-                home: const HomePage(),
+                home: const LoginScreen(),
               );
             }
           }
 
-          class HomePage extends StatefulWidget {
-            const HomePage({super.key});
+          class AppUser {
+            AppUser({
+              required this.name,
+              required this.username,
+              required this.password,
+              required this.admin,
+              this.active = true,
+              this.canScan = true,
+              this.canReports = true,
+            });
+
+            String name;
+            String username;
+            String password;
+            bool admin;
+            bool active;
+            bool canScan;
+            bool canReports;
+          }
+
+          enum ItemStatus {
+            valid,
+            nearExpiry,
+            expired,
+            unapproved,
+          }
+
+          class LabItem {
+            LabItem({
+              required this.name,
+              required this.type,
+              required this.rawCode,
+              required this.gtin,
+              required this.lot,
+              required this.catalog,
+              required this.serial,
+              required this.expiry,
+              required this.device,
+              required this.department,
+              required this.employee,
+              required this.totalQuantity,
+              required this.approved,
+            });
+
+            String name;
+            String type;
+            String rawCode;
+            String gtin;
+            String lot;
+            String catalog;
+            String serial;
+            DateTime expiry;
+            String device;
+            String department;
+            String employee;
+            double totalQuantity;
+            double usedQuantity = 0;
+            DateTime? openedAt;
+            bool approved;
+
+            double get remaining {
+              final result = totalQuantity - usedQuantity;
+              return result < 0 ? 0 : result;
+            }
+
+            ItemStatus status() {
+              if (!approved) return ItemStatus.unapproved;
+
+              final now = DateTime.now();
+              final today = DateTime(
+                now.year,
+                now.month,
+                now.day,
+              );
+
+              final end = DateTime(
+                expiry.year,
+                expiry.month,
+                expiry.day,
+              );
+
+              if (end.isBefore(today)) {
+                return ItemStatus.expired;
+              }
+
+              if (end.difference(today).inDays <= 30) {
+                return ItemStatus.nearExpiry;
+              }
+
+              return ItemStatus.valid;
+            }
+          }
+
+          class UsageRecord {
+            UsageRecord({
+              required this.material,
+              required this.employee,
+              required this.quantity,
+              required this.dateTime,
+            });
+
+            final String material;
+            final String employee;
+            final double quantity;
+            final DateTime dateTime;
+          }
+
+          class AppData {
+            static final users = <AppUser>[
+              AppUser(
+                name: 'المستخدم الرئيسي',
+                username: 'admin',
+                password: '1234',
+                admin: true,
+              ),
+              AppUser(
+                name: 'موظف قسم الكيمياء',
+                username: 'staff',
+                password: '1234',
+                admin: false,
+              ),
+            ];
+
+            static final materials = <LabItem>[];
+            static final usage = <UsageRecord>[];
+
+            static AppUser? currentUser;
+          }
+
+          class LoginScreen extends StatefulWidget {
+            const LoginScreen({super.key});
 
             @override
-            State<HomePage> createState() => _HomePageState();
+            State<LoginScreen> createState() {
+              return _LoginScreenState();
+            }
           }
 
-          class _HomePageState extends State<HomePage> {
-            final employeeController =
-                TextEditingController(text: 'موظف قسم الكيمياء');
+          class _LoginScreenState extends State<LoginScreen> {
+            final username =
+                TextEditingController(text: 'admin');
 
-            String rawCode = '';
-            String gtin = '';
-            String lot = '';
-            String expiry = '';
-            String catalog = '';
+            final password =
+                TextEditingController(text: '1234');
 
-            Future<void> openScanner() async {
-              final value = await Navigator.push<String>(
+            String error = '';
+
+            void login() {
+              AppUser? selected;
+
+              for (final user in AppData.users) {
+                if (user.username == username.text.trim() &&
+                    user.password == password.text &&
+                    user.active) {
+                  selected = user;
+                  break;
+                }
+              }
+
+              if (selected == null) {
+                setState(() {
+                  error =
+                      'بيانات الدخول غير صحيحة أو المستخدم موقوف';
+                });
+                return;
+              }
+
+              AppData.currentUser = selected;
+
+              Navigator.pushReplacement(
                 context,
                 MaterialPageRoute(
-                  builder: (_) => const ScannerPage(),
-                ),
-              );
-
-              if (value != null && value.isNotEmpty) {
-                processCode(value);
-              }
-            }
-
-            void processCode(String value) {
-              final result = parseGs1(value);
-
-              setState(() {
-                rawCode = value;
-                gtin = result['gtin'] ?? '';
-                lot = result['lot'] ?? '';
-                expiry = result['expiry'] ?? '';
-                catalog = result['catalog'] ?? '';
-              });
-
-              showDialog<void>(
-                context: context,
-                builder: (_) => AlertDialog(
-                  title: const Text('تم تسجيل العبوة'),
-                  content: details(),
-                  actions: [
-                    FilledButton(
-                      onPressed: () => Navigator.pop(context),
-                      child: const Text('تم'),
-                    ),
-                  ],
-                ),
-              );
-            }
-
-            Future<void> manualTest() async {
-              final controller = TextEditingController(
-                text:
-                    '(01)00380740150005(17)260731(10)50532Y600(240)09P9510',
-              );
-
-              final value = await showDialog<String>(
-                context: context,
-                builder: (_) => AlertDialog(
-                  title: const Text('تجربة كود GS1'),
-                  content: TextField(
-                    controller: controller,
-                    maxLines: 4,
-                    decoration: const InputDecoration(
-                      border: OutlineInputBorder(),
-                      labelText: 'الكود',
-                    ),
-                  ),
-                  actions: [
-                    TextButton(
-                      onPressed: () => Navigator.pop(context),
-                      child: const Text('إلغاء'),
-                    ),
-                    FilledButton(
-                      onPressed: () {
-                        Navigator.pop(context, controller.text);
-                      },
-                      child: const Text('تحليل'),
-                    ),
-                  ],
-                ),
-              );
-
-              controller.dispose();
-
-              if (value != null && value.isNotEmpty) {
-                processCode(value);
-              }
-            }
-
-            Widget informationRow(String title, String value) {
-              final displayed = value.trim().isEmpty ? '—' : value;
-
-              return Padding(
-                padding: const EdgeInsets.symmetric(vertical: 5),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    SizedBox(
-                      width: 125,
-                      child: Text(
-                        title,
-                        style: const TextStyle(
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ),
-                    Expanded(
-                      child: SelectableText(displayed),
-                    ),
-                  ],
-                ),
-              );
-            }
-
-            Widget details() {
-              return SingleChildScrollView(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    informationRow('GTIN', gtin),
-                    informationRow('LOT', lot),
-                    informationRow('تاريخ الانتهاء', expiry),
-                    informationRow('رقم الكتالوج', catalog),
-                    informationRow(
-                      'الموظف',
-                      employeeController.text.trim(),
-                    ),
-                    const Divider(),
-                    const Text(
-                      'الكود الخام',
-                      style: TextStyle(fontWeight: FontWeight.bold),
-                    ),
-                    SelectableText(rawCode),
-                  ],
+                  builder: (_) => const HomeScreen(),
                 ),
               );
             }
 
             @override
             void dispose() {
-              employeeController.dispose();
+              username.dispose();
+              password.dispose();
               super.dispose();
             }
 
             @override
             Widget build(BuildContext context) {
               return Scaffold(
+                body: SafeArea(
+                  child: Center(
+                    child: SingleChildScrollView(
+                      padding: const EdgeInsets.all(24),
+                      child: Card(
+                        child: Padding(
+                          padding: const EdgeInsets.all(24),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            crossAxisAlignment:
+                                CrossAxisAlignment.stretch,
+                            children: [
+                              const Icon(
+                                Icons.science_outlined,
+                                size: 75,
+                              ),
+                              const SizedBox(height: 12),
+                              const Text(
+                                'SmartChem Track v2',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  fontSize: 27,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                              const SizedBox(height: 24),
+                              TextField(
+                                controller: username,
+                                decoration:
+                                    const InputDecoration(
+                                  labelText: 'اسم المستخدم',
+                                ),
+                              ),
+                              const SizedBox(height: 12),
+                              TextField(
+                                controller: password,
+                                obscureText: true,
+                                decoration:
+                                    const InputDecoration(
+                                  labelText: 'كلمة المرور',
+                                ),
+                              ),
+                              if (error.isNotEmpty) ...[
+                                const SizedBox(height: 10),
+                                Text(
+                                  error,
+                                  style: const TextStyle(
+                                    color: Colors.red,
+                                  ),
+                                ),
+                              ],
+                              const SizedBox(height: 14),
+                              FilledButton(
+                                onPressed: login,
+                                child: const Padding(
+                                  padding: EdgeInsets.symmetric(
+                                    vertical: 14,
+                                  ),
+                                  child: Text('دخول'),
+                                ),
+                              ),
+                              const SizedBox(height: 10),
+                              const Text(
+                                'الرئيسي: admin / 1234\n'
+                                'الموظف: staff / 1234',
+                                textAlign: TextAlign.center,
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              );
+            }
+          }
+
+          class HomeScreen extends StatefulWidget {
+            const HomeScreen({super.key});
+
+            @override
+            State<HomeScreen> createState() {
+              return _HomeScreenState();
+            }
+          }
+
+          class _HomeScreenState extends State<HomeScreen> {
+            int count(ItemStatus status) {
+              return AppData.materials
+                  .where((item) => item.status() == status)
+                  .length;
+            }
+
+            Future<void> open(Widget screen) async {
+              await Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => screen),
+              );
+
+              setState(() {});
+            }
+
+            void logout() {
+              AppData.currentUser = null;
+
+              Navigator.pushReplacement(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => const LoginScreen(),
+                ),
+              );
+            }
+
+            @override
+            Widget build(BuildContext context) {
+              final user = AppData.currentUser!;
+
+              return Scaffold(
                 appBar: AppBar(
-                  title: const Text('SmartChem Track'),
+                  title: const Text(
+                    'SmartChem Track v2',
+                  ),
+                  actions: [
+                    IconButton(
+                      onPressed: logout,
+                      icon: const Icon(Icons.logout),
+                    ),
+                  ],
                 ),
                 body: ListView(
                   padding: const EdgeInsets.all(16),
                   children: [
-                    const CircleAvatar(
-                      radius: 40,
-                      child: Icon(
-                        Icons.science_outlined,
-                        size: 45,
-                      ),
+                    Text(
+                      'مرحبًا، ${user.name}',
+                      style:
+                          Theme.of(context).textTheme.titleLarge,
                     ),
                     const SizedBox(height: 14),
-                    const Text(
-                      'تتبع الكواشف والـ Controls والـ Calibrators',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                      ),
+                    GridView.count(
+                      crossAxisCount: 2,
+                      shrinkWrap: true,
+                      physics:
+                          const NeverScrollableScrollPhysics(),
+                      childAspectRatio: 1.55,
+                      mainAxisSpacing: 10,
+                      crossAxisSpacing: 10,
+                      children: [
+                        StatusCard(
+                          title: 'صالح',
+                          count: count(ItemStatus.valid),
+                          color: Colors.green,
+                        ),
+                        StatusCard(
+                          title: 'قريب الانتهاء',
+                          count:
+                              count(ItemStatus.nearExpiry),
+                          color: Colors.amber,
+                        ),
+                        StatusCard(
+                          title: 'منتهي',
+                          count: count(ItemStatus.expired),
+                          color: Colors.red,
+                        ),
+                        StatusCard(
+                          title: 'غير معتمد',
+                          count:
+                              count(ItemStatus.unapproved),
+                          color: Colors.orange,
+                        ),
+                      ],
                     ),
-                    const SizedBox(height: 20),
-                    TextField(
-                      controller: employeeController,
-                      decoration: const InputDecoration(
-                        border: OutlineInputBorder(),
-                        labelText: 'اسم الموظف',
-                        prefixIcon: Icon(Icons.badge_outlined),
-                      ),
-                    ),
-                    const SizedBox(height: 14),
-                    FilledButton.icon(
-                      onPressed: openScanner,
-                      icon: const Icon(Icons.qr_code_scanner),
-                      label: const Padding(
-                        padding: EdgeInsets.symmetric(vertical: 15),
-                        child: Text(
-                          'مسح Data Matrix أو الباركود',
+                    const SizedBox(height: 18),
+                    if (user.canScan)
+                      FilledButton.icon(
+                        onPressed: () {
+                          open(const ScannerScreen());
+                        },
+                        icon:
+                            const Icon(Icons.qr_code_scanner),
+                        label: const Padding(
+                          padding: EdgeInsets.symmetric(
+                            vertical: 15,
+                          ),
+                          child: Text(
+                            'مسح Data Matrix أو QR والباركود',
+                          ),
                         ),
                       ),
-                    ),
-                    const SizedBox(height: 8),
+                    const SizedBox(height: 10),
                     OutlinedButton.icon(
-                      onPressed: manualTest,
-                      icon: const Icon(Icons.keyboard),
-                      label: const Text('تجربة بكود جاهز'),
+                      onPressed: () {
+                        open(const InventoryScreen());
+                      },
+                      icon: const Icon(
+                        Icons.inventory_2_outlined,
+                      ),
+                      label: const Text('المخزون'),
                     ),
-                    const SizedBox(height: 20),
-                    if (rawCode.isNotEmpty)
-                      Card(
-                        child: Padding(
-                          padding: const EdgeInsets.all(16),
-                          child: details(),
+                    if (user.canReports) ...[
+                      const SizedBox(height: 10),
+                      OutlinedButton.icon(
+                        onPressed: () {
+                          open(const ReportsScreen());
+                        },
+                        icon: const Icon(
+                          Icons.assessment_outlined,
+                        ),
+                        label: const Text(
+                          'التقارير اليومية والأسبوعية والشهرية',
                         ),
                       ),
+                    ],
+                    if (user.admin) ...[
+                      const SizedBox(height: 10),
+                      OutlinedButton.icon(
+                        onPressed: () {
+                          open(const AdminScreen());
+                        },
+                        icon: const Icon(
+                          Icons.admin_panel_settings,
+                        ),
+                        label: const Text(
+                          'لوحة المستخدم الرئيسي',
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      FilledButton.tonalIcon(
+                        onPressed: () {
+                          ScaffoldMessenger.of(context)
+                              .showSnackBar(
+                            const SnackBar(
+                              content: Text(
+                                'أنت الآن داخل واجهة الموظف العادي',
+                              ),
+                            ),
+                          );
+                        },
+                        icon: const Icon(Icons.person_outline),
+                        label: const Text(
+                          'الدخول كمستخدم عادي',
+                        ),
+                      ),
+                    ],
                   ],
                 ),
               );
             }
           }
 
-          class ScannerPage extends StatefulWidget {
-            const ScannerPage({super.key});
+          class StatusCard extends StatelessWidget {
+            const StatusCard({
+              super.key,
+              required this.title,
+              required this.count,
+              required this.color,
+            });
 
-            @override
-            State<ScannerPage> createState() => _ScannerPageState();
-          }
-
-          class _ScannerPageState extends State<ScannerPage> {
-            final MobileScannerController controller =
-                MobileScannerController();
-
-            bool completed = false;
-
-            void detected(BarcodeCapture capture) {
-              if (completed || capture.barcodes.isEmpty) {
-                return;
-              }
-
-              final value = capture.barcodes.first.rawValue;
-
-              if (value == null || value.isEmpty) {
-                return;
-              }
-
-              completed = true;
-              Navigator.pop(context, value);
-            }
-
-            @override
-            void dispose() {
-              controller.dispose();
-              super.dispose();
-            }
+            final String title;
+            final int count;
+            final Color color;
 
             @override
             Widget build(BuildContext context) {
-              return Scaffold(
-                appBar: AppBar(
-                  title: const Text('مسح العبوة'),
-                  actions: [
-                    IconButton(
-                      onPressed: controller.toggleTorch,
-                      icon: const Icon(
-                        Icons.flashlight_on_outlined,
+              return Card(
+                child: Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    border: Border(
+                      right: BorderSide(
+                        color: color,
+                        width: 7,
                       ),
                     ),
-                  ],
-                ),
-                body: Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    MobileScanner(
-                      controller: controller,
-                      onDetect: detected,
-                    ),
-                    Center(
-                      child: Container(
-                        width: 285,
-                        height: 190,
-                        decoration: BoxDecoration(
-                          border: Border.all(
-                            color: Colors.white,
-                            width: 3,
-                          ),
-                          borderRadius:
-                              BorderRadius.circular(18),
+                  ),
+                  child: Column(
+                    mainAxisAlignment:
+                        MainAxisAlignment.center,
+                    children: [
+                      Text(
+                        '$count',
+                        style: const TextStyle(
+                          fontSize: 27,
+                          fontWeight: FontWeight.bold,
                         ),
                       ),
-                    ),
-                    const Positioned(
-                      right: 20,
-                      left: 20,
-                      bottom: 35,
-                      child: Card(
-                        child: Padding(
-                          padding: EdgeInsets.all(14),
-                          child: Text(
-                            'ضع Data Matrix داخل الإطار',
-                            textAlign: TextAlign.center,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
+                      Text(title),
+                    ],
+                  ),
                 ),
               );
             }
           }
 
-          Map<String, String> parseGs1(String input) {
-            String raw = input.trim();
+          class ParsedCode {
+            const ParsedCode({
+              required this.raw,
+              required this.gtin,
+              required this.lot,
+              required this.catalog,
+              required this.expiry,
+            });
+
+            final String raw;
+            final String gtin;
+            final String lot;
+            final String catalog;
+            final DateTime? expiry;
+          }
+
+          ParsedCode parseGs1(String input) {
+            var raw = input.trim();
 
             raw = raw.replaceAll(
               '<GS>',
@@ -394,49 +598,70 @@ jobs:
                   '';
             }
 
+            DateTime? parseDate(String value) {
+              if (!RegExp(r'^\d{6}$').hasMatch(value)) {
+                return null;
+              }
+
+              final year =
+                  2000 + int.parse(value.substring(0, 2));
+
+              final month =
+                  int.parse(value.substring(2, 4));
+
+              var day =
+                  int.parse(value.substring(4, 6));
+
+              if (month < 1 || month > 12) {
+                return null;
+              }
+
+              final lastDay =
+                  DateTime(year, month + 1, 0).day;
+
+              if (day == 0 || day > lastDay) {
+                day = lastDay;
+              }
+
+              return DateTime(year, month, day);
+            }
+
             if (raw.contains('(01)') ||
                 raw.contains('(10)') ||
                 raw.contains('(17)')) {
-              final expiryValue =
+              final expiryCode =
                   find(r'\(17\)(\d{6})');
 
-              return {
-                'gtin': find(r'\(01\)(\d{14})'),
-                'lot': find(
+              return ParsedCode(
+                raw: input,
+                gtin: find(r'\(01\)(\d{14})'),
+                lot: find(
                   r'\(10\)(.*?)(?=\(\d{2,3}\)|$)',
                 ),
-                'expiry': formatExpiry(expiryValue),
-                'catalog': find(
+                catalog: find(
                   r'\(240\)(.*?)(?=\(\d{2,3}\)|$)',
                 ),
-              };
-            }
-
-            String gtin = '';
-            String lot = '';
-            String expiry = '';
-            String catalog = '';
-
-            final gtinMatch =
-                RegExp(r'01(\d{14})').firstMatch(raw);
-
-            if (gtinMatch != null) {
-              gtin = gtinMatch.group(1) ?? '';
-            }
-
-            final expiryMatch =
-                RegExp(r'17(\d{6})').firstMatch(raw);
-
-            if (expiryMatch != null) {
-              expiry = formatExpiry(
-                expiryMatch.group(1) ?? '',
+                expiry: parseDate(expiryCode),
               );
             }
 
-            final fields =
-                raw.split(String.fromCharCode(29));
+            final gtin =
+                RegExp(r'01(\d{14})')
+                        .firstMatch(raw)
+                        ?.group(1) ??
+                    '';
 
-            for (final field in fields) {
+            final expiryCode =
+                RegExp(r'17(\d{6})')
+                        .firstMatch(raw)
+                        ?.group(1) ??
+                    '';
+
+            String lot = '';
+            String catalog = '';
+
+            for (final field
+                in raw.split(String.fromCharCode(29))) {
               if (field.startsWith('10')) {
                 lot = field.substring(2);
               }
@@ -446,29 +671,1019 @@ jobs:
               }
             }
 
-            return {
-              'gtin': gtin,
-              'lot': lot,
-              'expiry': expiry,
-              'catalog': catalog,
-            };
+            return ParsedCode(
+              raw: input,
+              gtin: gtin,
+              lot: lot,
+              catalog: catalog,
+              expiry: parseDate(expiryCode),
+            );
           }
 
-          String formatExpiry(String value) {
-            if (!RegExp(r'^\d{6}$').hasMatch(value)) {
-              return '';
+          class ScannerScreen extends StatefulWidget {
+            const ScannerScreen({super.key});
+
+            @override
+            State<ScannerScreen> createState() {
+              return _ScannerScreenState();
+            }
+          }
+
+          class _ScannerScreenState
+              extends State<ScannerScreen>
+              with WidgetsBindingObserver {
+            late final MobileScannerController controller;
+
+            bool processing = false;
+            String errorMessage = '';
+
+            @override
+            void initState() {
+              super.initState();
+
+              WidgetsBinding.instance.addObserver(this);
+
+              controller = MobileScannerController(
+                autoStart: false,
+                facing: CameraFacing.back,
+                detectionSpeed:
+                    DetectionSpeed.noDuplicates,
+              );
+
+              WidgetsBinding.instance
+                  .addPostFrameCallback((_) {
+                startCamera();
+              });
             }
 
-            final year = '20${value.substring(0, 2)}';
-            final month = value.substring(2, 4);
-            final day = value.substring(4, 6);
+            Future<void> startCamera() async {
+              try {
+                await controller.start();
 
-            return '$day/$month/$year';
+                if (mounted) {
+                  setState(() {
+                    errorMessage = '';
+                  });
+                }
+              } catch (error) {
+                if (mounted) {
+                  setState(() {
+                    errorMessage =
+                        'تعذر تشغيل الكاميرا. '
+                        'تأكد من منح صلاحية الكاميرا '
+                        'ثم اضغط إعادة المحاولة.';
+                  });
+                }
+              }
+            }
+
+            @override
+            void didChangeAppLifecycleState(
+              AppLifecycleState state,
+            ) {
+              if (state == AppLifecycleState.paused ||
+                  state == AppLifecycleState.inactive) {
+                controller.stop();
+              }
+
+              if (state == AppLifecycleState.resumed) {
+                startCamera();
+              }
+            }
+
+            Future<void> process(String raw) async {
+              if (processing || raw.trim().isEmpty) {
+                return;
+              }
+
+              processing = true;
+
+              await controller.stop();
+
+              final parsed = parseGs1(raw);
+
+              if (!mounted) return;
+
+              await Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => MaterialFormScreen(
+                    parsed: parsed,
+                  ),
+                ),
+              );
+
+              if (mounted) {
+                Navigator.pop(context);
+              }
+            }
+
+            Future<void> manualEntry() async {
+              final text = TextEditingController(
+                text:
+                    '(01)00380740150005'
+                    '(17)260731'
+                    '(10)50532Y600'
+                    '(240)09P9510',
+              );
+
+              final value =
+                  await showDialog<String>(
+                context: context,
+                builder: (_) => AlertDialog(
+                  title: const Text(
+                    'إدخال الكود يدويًا',
+                  ),
+                  content: TextField(
+                    controller: text,
+                    maxLines: 4,
+                  ),
+                  actions: [
+                    TextButton(
+                      onPressed: () {
+                        Navigator.pop(context);
+                      },
+                      child: const Text('إلغاء'),
+                    ),
+                    FilledButton(
+                      onPressed: () {
+                        Navigator.pop(
+                          context,
+                          text.text.trim(),
+                        );
+                      },
+                      child: const Text('متابعة'),
+                    ),
+                  ],
+                ),
+              );
+
+              text.dispose();
+
+              if (value != null && value.isNotEmpty) {
+                await process(value);
+              }
+            }
+
+            @override
+            void dispose() {
+              WidgetsBinding.instance.removeObserver(this);
+              controller.dispose();
+              super.dispose();
+            }
+
+            @override
+            Widget build(BuildContext context) {
+              return Scaffold(
+                appBar: AppBar(
+                  title: const Text('مسح العبوة'),
+                  actions: [
+                    IconButton(
+                      onPressed: manualEntry,
+                      icon: const Icon(Icons.keyboard),
+                    ),
+                    IconButton(
+                      onPressed: controller.toggleTorch,
+                      icon: const Icon(
+                        Icons.flashlight_on_outlined,
+                      ),
+                    ),
+                  ],
+                ),
+                body: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    MobileScanner(
+                      controller: controller,
+                      onDetect: (capture) {
+                        if (capture.barcodes.isEmpty) {
+                          return;
+                        }
+
+                        final value =
+                            capture.barcodes.first.rawValue;
+
+                        if (value != null) {
+                          process(value);
+                        }
+                      },
+                    ),
+                    Center(
+                      child: Container(
+                        width: 290,
+                        height: 190,
+                        decoration: BoxDecoration(
+                          border: Border.all(
+                            color: Colors.white,
+                            width: 3,
+                          ),
+                          borderRadius:
+                              BorderRadius.circular(18),
+                        ),
+                      ),
+                    ),
+                    if (errorMessage.isNotEmpty)
+                      Center(
+                        child: Card(
+                          margin: const EdgeInsets.all(25),
+                          child: Padding(
+                            padding:
+                                const EdgeInsets.all(20),
+                            child: Column(
+                              mainAxisSize:
+                                  MainAxisSize.min,
+                              children: [
+                                const Icon(
+                                  Icons.camera_alt_outlined,
+                                  size: 55,
+                                ),
+                                const SizedBox(height: 12),
+                                Text(
+                                  errorMessage,
+                                  textAlign: TextAlign.center,
+                                ),
+                                const SizedBox(height: 12),
+                                FilledButton(
+                                  onPressed: startCamera,
+                                  child: const Text(
+                                    'إعادة المحاولة',
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    const Positioned(
+                      right: 20,
+                      left: 20,
+                      bottom: 30,
+                      child: Card(
+                        child: Padding(
+                          padding: EdgeInsets.all(14),
+                          child: Text(
+                            'ضع Data Matrix أو QR '
+                            'أو الباركود داخل الإطار',
+                            textAlign: TextAlign.center,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            }
+          }
+
+          class MaterialFormScreen extends StatefulWidget {
+            const MaterialFormScreen({
+              super.key,
+              required this.parsed,
+            });
+
+            final ParsedCode parsed;
+
+            @override
+            State<MaterialFormScreen> createState() {
+              return _MaterialFormScreenState();
+            }
+          }
+
+          class _MaterialFormScreenState
+              extends State<MaterialFormScreen> {
+            final name = TextEditingController();
+            final serial = TextEditingController();
+            final device = TextEditingController();
+            final department =
+                TextEditingController(text: 'قسم الكيمياء');
+
+            final quantity =
+                TextEditingController(text: '1');
+
+            String type = 'Reagent';
+            bool approved = false;
+
+            late DateTime expiry;
+
+            @override
+            void initState() {
+              super.initState();
+
+              expiry = widget.parsed.expiry ??
+                  DateTime.now().add(
+                    const Duration(days: 365),
+                  );
+
+              serial.text = widget.parsed.lot.isEmpty
+                  ? DateTime.now()
+                      .microsecondsSinceEpoch
+                      .toString()
+                  : widget.parsed.lot;
+            }
+
+            void save() {
+              final qty =
+                  double.tryParse(quantity.text) ?? 0;
+
+              if (name.text.trim().isEmpty ||
+                  device.text.trim().isEmpty ||
+                  qty <= 0) {
+                ScaffoldMessenger.of(context)
+                    .showSnackBar(
+                  const SnackBar(
+                    content: Text(
+                      'أكمل اسم المادة والجهاز والكمية',
+                    ),
+                  ),
+                );
+
+                return;
+              }
+
+              AppData.materials.insert(
+                0,
+                LabItem(
+                  name: name.text.trim(),
+                  type: type,
+                  rawCode: widget.parsed.raw,
+                  gtin: widget.parsed.gtin,
+                  lot: widget.parsed.lot,
+                  catalog: widget.parsed.catalog,
+                  serial: serial.text.trim(),
+                  expiry: expiry,
+                  device: device.text.trim(),
+                  department: department.text.trim(),
+                  employee:
+                      AppData.currentUser?.name ?? '',
+                  totalQuantity: qty,
+                  approved: approved,
+                ),
+              );
+
+              Navigator.pop(context);
+            }
+
+            @override
+            void dispose() {
+              name.dispose();
+              serial.dispose();
+              device.dispose();
+              department.dispose();
+              quantity.dispose();
+              super.dispose();
+            }
+
+            @override
+            Widget build(BuildContext context) {
+              return Scaffold(
+                appBar: AppBar(
+                  title: const Text('تسجيل المادة'),
+                ),
+                body: ListView(
+                  padding: const EdgeInsets.all(16),
+                  children: [
+                    TextField(
+                      controller: name,
+                      decoration:
+                          const InputDecoration(
+                        labelText: 'اسم المادة',
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    DropdownButtonFormField<String>(
+                      value: type,
+                      decoration:
+                          const InputDecoration(
+                        labelText: 'نوع المادة',
+                      ),
+                      items: const [
+                        DropdownMenuItem(
+                          value: 'Reagent',
+                          child: Text('Reagent'),
+                        ),
+                        DropdownMenuItem(
+                          value: 'Control',
+                          child: Text('Control'),
+                        ),
+                        DropdownMenuItem(
+                          value: 'Calibrator',
+                          child: Text('Calibrator'),
+                        ),
+                      ],
+                      onChanged: (value) {
+                        setState(() {
+                          type = value!;
+                        });
+                      },
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: serial,
+                      decoration:
+                          const InputDecoration(
+                        labelText: 'الرقم التسلسلي',
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: device,
+                      decoration:
+                          const InputDecoration(
+                        labelText: 'اسم الجهاز',
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: department,
+                      decoration:
+                          const InputDecoration(
+                        labelText: 'القسم',
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: quantity,
+                      keyboardType:
+                          TextInputType.number,
+                      decoration:
+                          const InputDecoration(
+                        labelText: 'الكمية الأصلية',
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title:
+                          const Text('تاريخ الانتهاء'),
+                      subtitle: Text(
+                        DateFormat('dd/MM/yyyy')
+                            .format(expiry),
+                      ),
+                      trailing:
+                          const Icon(Icons.calendar_month),
+                      onTap: () async {
+                        final selected =
+                            await showDatePicker(
+                          context: context,
+                          initialDate: expiry,
+                          firstDate: DateTime(2020),
+                          lastDate: DateTime(2040),
+                        );
+
+                        if (selected != null) {
+                          setState(() {
+                            expiry = selected;
+                          });
+                        }
+                      },
+                    ),
+                    SwitchListTile(
+                      title: const Text(
+                        'معتمد للاستخدام',
+                      ),
+                      value: approved,
+                      onChanged:
+                          AppData.currentUser?.admin == true
+                              ? (value) {
+                                  setState(() {
+                                    approved = value;
+                                  });
+                                }
+                              : null,
+                    ),
+                    if (widget.parsed.gtin.isNotEmpty)
+                      Text(
+                        'GTIN: ${widget.parsed.gtin}',
+                      ),
+                    if (widget.parsed.lot.isNotEmpty)
+                      Text(
+                        'LOT: ${widget.parsed.lot}',
+                      ),
+                    if (widget.parsed.catalog.isNotEmpty)
+                      Text(
+                        'Catalog: '
+                        '${widget.parsed.catalog}',
+                      ),
+                    const SizedBox(height: 16),
+                    FilledButton(
+                      onPressed: save,
+                      child: const Padding(
+                        padding:
+                            EdgeInsets.symmetric(
+                          vertical: 14,
+                        ),
+                        child: Text('حفظ المادة'),
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            }
+          }
+
+          class InventoryScreen extends StatefulWidget {
+            const InventoryScreen({super.key});
+
+            @override
+            State<InventoryScreen> createState() {
+              return _InventoryScreenState();
+            }
+          }
+
+          class _InventoryScreenState
+              extends State<InventoryScreen> {
+            Color statusColor(ItemStatus status) {
+              switch (status) {
+                case ItemStatus.valid:
+                  return Colors.green;
+                case ItemStatus.nearExpiry:
+                  return Colors.amber;
+                case ItemStatus.expired:
+                  return Colors.red;
+                case ItemStatus.unapproved:
+                  return Colors.orange;
+              }
+            }
+
+            String statusName(ItemStatus status) {
+              switch (status) {
+                case ItemStatus.valid:
+                  return 'صالح';
+                case ItemStatus.nearExpiry:
+                  return 'قريب الانتهاء';
+                case ItemStatus.expired:
+                  return 'منتهي';
+                case ItemStatus.unapproved:
+                  return 'غير معتمد';
+              }
+            }
+
+            Future<void> useItem(LabItem item) async {
+              final status = item.status();
+
+              if (status == ItemStatus.expired ||
+                  status == ItemStatus.unapproved) {
+                ScaffoldMessenger.of(context)
+                    .showSnackBar(
+                  SnackBar(
+                    backgroundColor:
+                        statusColor(status),
+                    content: Text(
+                      status == ItemStatus.expired
+                          ? 'لا يمكن الاستخدام: '
+                              'المادة منتهية'
+                          : 'لا يمكن الاستخدام: '
+                              'المادة غير معتمدة',
+                    ),
+                  ),
+                );
+
+                return;
+              }
+
+              final controller =
+                  TextEditingController(text: '1');
+
+              final used =
+                  await showDialog<double>(
+                context: context,
+                builder: (_) => AlertDialog(
+                  title: Text(
+                    'تسجيل استخدام ${item.name}',
+                  ),
+                  content: TextField(
+                    controller: controller,
+                    keyboardType:
+                        TextInputType.number,
+                    decoration: InputDecoration(
+                      labelText:
+                          'الكمية المستخدمة '
+                          '- المتبقي ${item.remaining}',
+                    ),
+                  ),
+                  actions: [
+                    TextButton(
+                      onPressed: () {
+                        Navigator.pop(context);
+                      },
+                      child: const Text('إلغاء'),
+                    ),
+                    FilledButton(
+                      onPressed: () {
+                        Navigator.pop(
+                          context,
+                          double.tryParse(
+                            controller.text,
+                          ),
+                        );
+                      },
+                      child: const Text('حفظ'),
+                    ),
+                  ],
+                ),
+              );
+
+              controller.dispose();
+
+              if (used == null ||
+                  used <= 0 ||
+                  used > item.remaining) {
+                return;
+              }
+
+              setState(() {
+                item.usedQuantity += used;
+                item.openedAt ??= DateTime.now();
+
+                AppData.usage.insert(
+                  0,
+                  UsageRecord(
+                    material: item.name,
+                    employee:
+                        AppData.currentUser?.name ?? '',
+                    quantity: used,
+                    dateTime: DateTime.now(),
+                  ),
+                );
+              });
+            }
+
+            @override
+            Widget build(BuildContext context) {
+              return Scaffold(
+                appBar: AppBar(
+                  title: const Text('المخزون'),
+                ),
+                body: AppData.materials.isEmpty
+                    ? const Center(
+                        child: Text(
+                          'لا توجد مواد مسجلة',
+                        ),
+                      )
+                    : ListView.separated(
+                        padding:
+                            const EdgeInsets.all(12),
+                        itemCount:
+                            AppData.materials.length,
+                        separatorBuilder: (_, __) {
+                          return const SizedBox(
+                            height: 8,
+                          );
+                        },
+                        itemBuilder: (_, index) {
+                          final item =
+                              AppData.materials[index];
+
+                          final status =
+                              item.status();
+
+                          return Card(
+                            child: ListTile(
+                              leading: CircleAvatar(
+                                backgroundColor:
+                                    statusColor(status),
+                                child: const Icon(
+                                  Icons.science,
+                                  color: Colors.white,
+                                ),
+                              ),
+                              title: Text(item.name),
+                              subtitle: Text(
+                                '${item.type} • '
+                                '${item.device}\n'
+                                'LOT: ${item.lot}\n'
+                                'الانتهاء: '
+                                '${DateFormat('dd/MM/yyyy').format(item.expiry)}\n'
+                                'المتبقي: '
+                                '${item.remaining}',
+                              ),
+                              isThreeLine: true,
+                              trailing: Text(
+                                statusName(status),
+                                style: TextStyle(
+                                  color:
+                                      statusColor(status),
+                                  fontWeight:
+                                      FontWeight.bold,
+                                ),
+                              ),
+                              onTap: () {
+                                useItem(item);
+                              },
+                            ),
+                          );
+                        },
+                      ),
+              );
+            }
+          }
+
+          class ReportsScreen extends StatelessWidget {
+            const ReportsScreen({super.key});
+
+            double total(Duration period) {
+              final start =
+                  DateTime.now().subtract(period);
+
+              return AppData.usage
+                  .where(
+                    (record) =>
+                        record.dateTime.isAfter(start),
+                  )
+                  .fold(
+                    0,
+                    (sum, record) =>
+                        sum + record.quantity,
+                  );
+            }
+
+            int operations(Duration period) {
+              final start =
+                  DateTime.now().subtract(period);
+
+              return AppData.usage
+                  .where(
+                    (record) =>
+                        record.dateTime.isAfter(start),
+                  )
+                  .length;
+            }
+
+            Widget report(
+              BuildContext context,
+              String title,
+              Duration period,
+            ) {
+              return Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment:
+                        CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        title,
+                        style: Theme.of(context)
+                            .textTheme
+                            .titleLarge,
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        'عدد عمليات الاستخدام: '
+                        '${operations(period)}',
+                      ),
+                      Text(
+                        'إجمالي الكمية المستخدمة: '
+                        '${total(period)}',
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            }
+
+            @override
+            Widget build(BuildContext context) {
+              return Scaffold(
+                appBar: AppBar(
+                  title: const Text('التقارير'),
+                ),
+                body: ListView(
+                  padding: const EdgeInsets.all(16),
+                  children: [
+                    report(
+                      context,
+                      'التقرير اليومي',
+                      const Duration(days: 1),
+                    ),
+                    const SizedBox(height: 10),
+                    report(
+                      context,
+                      'التقرير الأسبوعي',
+                      const Duration(days: 7),
+                    ),
+                    const SizedBox(height: 10),
+                    report(
+                      context,
+                      'التقرير الشهري',
+                      const Duration(days: 30),
+                    ),
+                  ],
+                ),
+              );
+            }
+          }
+
+          class AdminScreen extends StatefulWidget {
+            const AdminScreen({super.key});
+
+            @override
+            State<AdminScreen> createState() {
+              return _AdminScreenState();
+            }
+          }
+
+          class _AdminScreenState
+              extends State<AdminScreen> {
+            Future<void> addUser() async {
+              final name = TextEditingController();
+              final username =
+                  TextEditingController();
+              final password =
+                  TextEditingController(text: '1234');
+
+              bool admin = false;
+
+              final save =
+                  await showDialog<bool>(
+                context: context,
+                builder: (_) => StatefulBuilder(
+                  builder:
+                      (context, updateDialog) {
+                    return AlertDialog(
+                      title:
+                          const Text('إضافة مستخدم'),
+                      content: SingleChildScrollView(
+                        child: Column(
+                          mainAxisSize:
+                              MainAxisSize.min,
+                          children: [
+                            TextField(
+                              controller: name,
+                              decoration:
+                                  const InputDecoration(
+                                labelText: 'الاسم',
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            TextField(
+                              controller: username,
+                              decoration:
+                                  const InputDecoration(
+                                labelText:
+                                    'اسم المستخدم',
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            TextField(
+                              controller: password,
+                              decoration:
+                                  const InputDecoration(
+                                labelText:
+                                    'كلمة المرور',
+                              ),
+                            ),
+                            SwitchListTile(
+                              title: const Text(
+                                'مستخدم رئيسي',
+                              ),
+                              value: admin,
+                              onChanged: (value) {
+                                updateDialog(() {
+                                  admin = value;
+                                });
+                              },
+                            ),
+                          ],
+                        ),
+                      ),
+                      actions: [
+                        TextButton(
+                          onPressed: () {
+                            Navigator.pop(
+                              context,
+                              false,
+                            );
+                          },
+                          child:
+                              const Text('إلغاء'),
+                        ),
+                        FilledButton(
+                          onPressed: () {
+                            Navigator.pop(
+                              context,
+                              true,
+                            );
+                          },
+                          child:
+                              const Text('إضافة'),
+                        ),
+                      ],
+                    );
+                  },
+                ),
+              );
+
+              if (save == true &&
+                  name.text.trim().isNotEmpty &&
+                  username.text.trim().isNotEmpty) {
+                setState(() {
+                  AppData.users.add(
+                    AppUser(
+                      name: name.text.trim(),
+                      username:
+                          username.text.trim(),
+                      password: password.text,
+                      admin: admin,
+                    ),
+                  );
+                });
+              }
+
+              name.dispose();
+              username.dispose();
+              password.dispose();
+            }
+
+            @override
+            Widget build(BuildContext context) {
+              return Scaffold(
+                appBar: AppBar(
+                  title: const Text(
+                    'لوحة المستخدم الرئيسي',
+                  ),
+                ),
+                floatingActionButton:
+                    FloatingActionButton.extended(
+                  onPressed: addUser,
+                  icon: const Icon(
+                    Icons.person_add_alt_1,
+                  ),
+                  label: const Text(
+                    'إضافة مستخدم',
+                  ),
+                ),
+                body: ListView.separated(
+                  padding: const EdgeInsets.all(12),
+                  itemCount: AppData.users.length,
+                  separatorBuilder: (_, __) {
+                    return const SizedBox(height: 8);
+                  },
+                  itemBuilder: (_, index) {
+                    final user =
+                        AppData.users[index];
+
+                    return Card(
+                      child: ExpansionTile(
+                        leading: Icon(
+                          user.admin
+                              ? Icons
+                                  .admin_panel_settings
+                              : Icons.person_outline,
+                        ),
+                        title: Text(user.name),
+                        subtitle: Text(
+                          '${user.username} • '
+                          '${user.admin ? 'رئيسي' : 'عادي'}',
+                        ),
+                        trailing: Switch(
+                          value: user.active,
+                          onChanged:
+                              user == AppData.currentUser
+                                  ? null
+                                  : (value) {
+                                      setState(() {
+                                        user.active =
+                                            value;
+                                      });
+                                    },
+                        ),
+                        children: [
+                          SwitchListTile(
+                            title: const Text(
+                              'السماح بمسح الباركود',
+                            ),
+                            value: user.canScan,
+                            onChanged: (value) {
+                              setState(() {
+                                user.canScan = value;
+                              });
+                            },
+                          ),
+                          SwitchListTile(
+                            title: const Text(
+                              'عرض التقارير',
+                            ),
+                            value: user.canReports,
+                            onChanged: (value) {
+                              setState(() {
+                                user.canReports =
+                                    value;
+                              });
+                            },
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+              );
+            }
           }
           DART
 
-      - name: Configure Android camera
-        working-directory: smartchem_app
+      - name: Configure Android v2
+        working-directory: smartchem_v2
         run: |
           python3 - <<'PY'
           from pathlib import Path
@@ -479,25 +1694,23 @@ jobs:
 
           text = manifest.read_text(encoding="utf-8")
 
-          marker = (
-              '<manifest xmlns:android='
-              '"http://schemas.android.com/apk/res/android">'
-          )
-
           permission = (
               '<uses-permission '
               'android:name="android.permission.CAMERA" />'
           )
 
           if permission not in text:
-              text = text.replace(
-                  marker,
-                  marker + "\n    " + permission
+              position = text.find(">")
+              text = (
+                  text[:position + 1]
+                  + "\n    "
+                  + permission
+                  + text[position + 1:]
               )
 
           text = text.replace(
-              'android:label="smartchem_track"',
-              'android:label="SmartChem Track"'
+              'android:label="smartchem_track_v2"',
+              'android:label="SmartChem Track v2"'
           )
 
           manifest.write_text(
@@ -505,38 +1718,55 @@ jobs:
               encoding="utf-8"
           )
 
-          gradle_file = Path(
+          gradle = Path(
               "android/app/build.gradle.kts"
           )
 
-          if gradle_file.exists():
-              gradle = gradle_file.read_text(
+          if gradle.exists():
+              content = gradle.read_text(
                   encoding="utf-8"
               )
 
-              gradle = gradle.replace(
+              content = content.replace(
+                  'applicationId = '
+                  '"om.smartchem.smartchem_track_v2"',
+                  'applicationId = '
+                  '"om.smartchem.track.v2"'
+              )
+
+              content = content.replace(
                   "minSdk = flutter.minSdkVersion",
                   "minSdk = 23"
               )
 
-              gradle_file.write_text(
-                  gradle,
+              content = content.replace(
+                  "versionCode = flutter.versionCode",
+                  "versionCode = 2"
+              )
+
+              content = content.replace(
+                  "versionName = flutter.versionName",
+                  'versionName = "2.0.0"'
+              )
+
+              gradle.write_text(
+                  content,
                   encoding="utf-8"
               )
           PY
 
-      - name: Build APK
-        working-directory: smartchem_app
+      - name: Build SmartChem Track v2 APK
+        working-directory: smartchem_v2
         run: flutter build apk --release
 
       - name: Rename APK
         run: |
-          cp smartchem_app/build/app/outputs/flutter-apk/app-release.apk SmartChemTrack.apk
+          cp smartchem_v2/build/app/outputs/flutter-apk/app-release.apk SmartChemTrack-v2.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: SmartChemTrack-APK
-          path: SmartChemTrack.apk
+          name: SmartChemTrack-v2-APK
+          path: SmartChemTrack-v2.apk
           retention-days: 30
           if-no-files-found: error
