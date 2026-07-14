@@ -1,0 +1,542 @@
+name: Build SmartChem APK
+
+on:
+  push:
+    branches:
+      - smartchem-apk-build
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Create Android application
+        run: flutter create smartchem_app --platforms=android --org om.smartchem --project-name smartchem_track
+
+      - name: Add barcode scanner
+        working-directory: smartchem_app
+        run: flutter pub add mobile_scanner
+
+      - name: Write SmartChem application
+        working-directory: smartchem_app
+        shell: bash
+        run: |
+          cat > lib/main.dart <<'DART'
+          import 'package:flutter/material.dart';
+          import 'package:mobile_scanner/mobile_scanner.dart';
+
+          void main() {
+            runApp(const SmartChemApp());
+          }
+
+          class SmartChemApp extends StatelessWidget {
+            const SmartChemApp({super.key});
+
+            @override
+            Widget build(BuildContext context) {
+              return MaterialApp(
+                debugShowCheckedModeBanner: false,
+                title: 'SmartChem Track',
+                theme: ThemeData(
+                  useMaterial3: true,
+                  colorScheme: ColorScheme.fromSeed(
+                    seedColor: const Color(0xFF006C70),
+                  ),
+                ),
+                builder: (context, child) {
+                  return Directionality(
+                    textDirection: TextDirection.rtl,
+                    child: child ?? const SizedBox(),
+                  );
+                },
+                home: const HomePage(),
+              );
+            }
+          }
+
+          class HomePage extends StatefulWidget {
+            const HomePage({super.key});
+
+            @override
+            State<HomePage> createState() => _HomePageState();
+          }
+
+          class _HomePageState extends State<HomePage> {
+            final employeeController =
+                TextEditingController(text: 'موظف قسم الكيمياء');
+
+            String rawCode = '';
+            String gtin = '';
+            String lot = '';
+            String expiry = '';
+            String catalog = '';
+
+            Future<void> openScanner() async {
+              final value = await Navigator.push<String>(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => const ScannerPage(),
+                ),
+              );
+
+              if (value != null && value.isNotEmpty) {
+                processCode(value);
+              }
+            }
+
+            void processCode(String value) {
+              final result = parseGs1(value);
+
+              setState(() {
+                rawCode = value;
+                gtin = result['gtin'] ?? '';
+                lot = result['lot'] ?? '';
+                expiry = result['expiry'] ?? '';
+                catalog = result['catalog'] ?? '';
+              });
+
+              showDialog<void>(
+                context: context,
+                builder: (_) => AlertDialog(
+                  title: const Text('تم تسجيل العبوة'),
+                  content: details(),
+                  actions: [
+                    FilledButton(
+                      onPressed: () => Navigator.pop(context),
+                      child: const Text('تم'),
+                    ),
+                  ],
+                ),
+              );
+            }
+
+            Future<void> manualTest() async {
+              final controller = TextEditingController(
+                text:
+                    '(01)00380740150005(17)260731(10)50532Y600(240)09P9510',
+              );
+
+              final value = await showDialog<String>(
+                context: context,
+                builder: (_) => AlertDialog(
+                  title: const Text('تجربة كود GS1'),
+                  content: TextField(
+                    controller: controller,
+                    maxLines: 4,
+                    decoration: const InputDecoration(
+                      border: OutlineInputBorder(),
+                      labelText: 'الكود',
+                    ),
+                  ),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(context),
+                      child: const Text('إلغاء'),
+                    ),
+                    FilledButton(
+                      onPressed: () {
+                        Navigator.pop(context, controller.text);
+                      },
+                      child: const Text('تحليل'),
+                    ),
+                  ],
+                ),
+              );
+
+              controller.dispose();
+
+              if (value != null && value.isNotEmpty) {
+                processCode(value);
+              }
+            }
+
+            Widget informationRow(String title, String value) {
+              final displayed = value.trim().isEmpty ? '—' : value;
+
+              return Padding(
+                padding: const EdgeInsets.symmetric(vertical: 5),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    SizedBox(
+                      width: 125,
+                      child: Text(
+                        title,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                    Expanded(
+                      child: SelectableText(displayed),
+                    ),
+                  ],
+                ),
+              );
+            }
+
+            Widget details() {
+              return SingleChildScrollView(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    informationRow('GTIN', gtin),
+                    informationRow('LOT', lot),
+                    informationRow('تاريخ الانتهاء', expiry),
+                    informationRow('رقم الكتالوج', catalog),
+                    informationRow(
+                      'الموظف',
+                      employeeController.text.trim(),
+                    ),
+                    const Divider(),
+                    const Text(
+                      'الكود الخام',
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    SelectableText(rawCode),
+                  ],
+                ),
+              );
+            }
+
+            @override
+            void dispose() {
+              employeeController.dispose();
+              super.dispose();
+            }
+
+            @override
+            Widget build(BuildContext context) {
+              return Scaffold(
+                appBar: AppBar(
+                  title: const Text('SmartChem Track'),
+                ),
+                body: ListView(
+                  padding: const EdgeInsets.all(16),
+                  children: [
+                    const CircleAvatar(
+                      radius: 40,
+                      child: Icon(
+                        Icons.science_outlined,
+                        size: 45,
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+                    const Text(
+                      'تتبع الكواشف والـ Controls والـ Calibrators',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+                    TextField(
+                      controller: employeeController,
+                      decoration: const InputDecoration(
+                        border: OutlineInputBorder(),
+                        labelText: 'اسم الموظف',
+                        prefixIcon: Icon(Icons.badge_outlined),
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+                    FilledButton.icon(
+                      onPressed: openScanner,
+                      icon: const Icon(Icons.qr_code_scanner),
+                      label: const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 15),
+                        child: Text(
+                          'مسح Data Matrix أو الباركود',
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    OutlinedButton.icon(
+                      onPressed: manualTest,
+                      icon: const Icon(Icons.keyboard),
+                      label: const Text('تجربة بكود جاهز'),
+                    ),
+                    const SizedBox(height: 20),
+                    if (rawCode.isNotEmpty)
+                      Card(
+                        child: Padding(
+                          padding: const EdgeInsets.all(16),
+                          child: details(),
+                        ),
+                      ),
+                  ],
+                ),
+              );
+            }
+          }
+
+          class ScannerPage extends StatefulWidget {
+            const ScannerPage({super.key});
+
+            @override
+            State<ScannerPage> createState() => _ScannerPageState();
+          }
+
+          class _ScannerPageState extends State<ScannerPage> {
+            final MobileScannerController controller =
+                MobileScannerController();
+
+            bool completed = false;
+
+            void detected(BarcodeCapture capture) {
+              if (completed || capture.barcodes.isEmpty) {
+                return;
+              }
+
+              final value = capture.barcodes.first.rawValue;
+
+              if (value == null || value.isEmpty) {
+                return;
+              }
+
+              completed = true;
+              Navigator.pop(context, value);
+            }
+
+            @override
+            void dispose() {
+              controller.dispose();
+              super.dispose();
+            }
+
+            @override
+            Widget build(BuildContext context) {
+              return Scaffold(
+                appBar: AppBar(
+                  title: const Text('مسح العبوة'),
+                  actions: [
+                    IconButton(
+                      onPressed: controller.toggleTorch,
+                      icon: const Icon(
+                        Icons.flashlight_on_outlined,
+                      ),
+                    ),
+                  ],
+                ),
+                body: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    MobileScanner(
+                      controller: controller,
+                      onDetect: detected,
+                    ),
+                    Center(
+                      child: Container(
+                        width: 285,
+                        height: 190,
+                        decoration: BoxDecoration(
+                          border: Border.all(
+                            color: Colors.white,
+                            width: 3,
+                          ),
+                          borderRadius:
+                              BorderRadius.circular(18),
+                        ),
+                      ),
+                    ),
+                    const Positioned(
+                      right: 20,
+                      left: 20,
+                      bottom: 35,
+                      child: Card(
+                        child: Padding(
+                          padding: EdgeInsets.all(14),
+                          child: Text(
+                            'ضع Data Matrix داخل الإطار',
+                            textAlign: TextAlign.center,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            }
+          }
+
+          Map<String, String> parseGs1(String input) {
+            String raw = input.trim();
+
+            raw = raw.replaceAll(
+              '<GS>',
+              String.fromCharCode(29),
+            );
+
+            if (raw.startsWith(']d2') ||
+                raw.startsWith(']D2')) {
+              raw = raw.substring(3);
+            }
+
+            String find(String pattern) {
+              return RegExp(pattern)
+                      .firstMatch(raw)
+                      ?.group(1)
+                      ?.trim() ??
+                  '';
+            }
+
+            if (raw.contains('(01)') ||
+                raw.contains('(10)') ||
+                raw.contains('(17)')) {
+              final expiryValue =
+                  find(r'\(17\)(\d{6})');
+
+              return {
+                'gtin': find(r'\(01\)(\d{14})'),
+                'lot': find(
+                  r'\(10\)(.*?)(?=\(\d{2,3}\)|$)',
+                ),
+                'expiry': formatExpiry(expiryValue),
+                'catalog': find(
+                  r'\(240\)(.*?)(?=\(\d{2,3}\)|$)',
+                ),
+              };
+            }
+
+            String gtin = '';
+            String lot = '';
+            String expiry = '';
+            String catalog = '';
+
+            final gtinMatch =
+                RegExp(r'01(\d{14})').firstMatch(raw);
+
+            if (gtinMatch != null) {
+              gtin = gtinMatch.group(1) ?? '';
+            }
+
+            final expiryMatch =
+                RegExp(r'17(\d{6})').firstMatch(raw);
+
+            if (expiryMatch != null) {
+              expiry = formatExpiry(
+                expiryMatch.group(1) ?? '',
+              );
+            }
+
+            final fields =
+                raw.split(String.fromCharCode(29));
+
+            for (final field in fields) {
+              if (field.startsWith('10')) {
+                lot = field.substring(2);
+              }
+
+              if (field.startsWith('240')) {
+                catalog = field.substring(3);
+              }
+            }
+
+            return {
+              'gtin': gtin,
+              'lot': lot,
+              'expiry': expiry,
+              'catalog': catalog,
+            };
+          }
+
+          String formatExpiry(String value) {
+            if (!RegExp(r'^\d{6}$').hasMatch(value)) {
+              return '';
+            }
+
+            final year = '20${value.substring(0, 2)}';
+            final month = value.substring(2, 4);
+            final day = value.substring(4, 6);
+
+            return '$day/$month/$year';
+          }
+          DART
+
+      - name: Configure Android camera
+        working-directory: smartchem_app
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          manifest = Path(
+              "android/app/src/main/AndroidManifest.xml"
+          )
+
+          text = manifest.read_text(encoding="utf-8")
+
+          marker = (
+              '<manifest xmlns:android='
+              '"http://schemas.android.com/apk/res/android">'
+          )
+
+          permission = (
+              '<uses-permission '
+              'android:name="android.permission.CAMERA" />'
+          )
+
+          if permission not in text:
+              text = text.replace(
+                  marker,
+                  marker + "\n    " + permission
+              )
+
+          text = text.replace(
+              'android:label="smartchem_track"',
+              'android:label="SmartChem Track"'
+          )
+
+          manifest.write_text(
+              text,
+              encoding="utf-8"
+          )
+
+          gradle_file = Path(
+              "android/app/build.gradle.kts"
+          )
+
+          if gradle_file.exists():
+              gradle = gradle_file.read_text(
+                  encoding="utf-8"
+              )
+
+              gradle = gradle.replace(
+                  "minSdk = flutter.minSdkVersion",
+                  "minSdk = 23"
+              )
+
+              gradle_file.write_text(
+                  gradle,
+                  encoding="utf-8"
+              )
+          PY
+
+      - name: Build APK
+        working-directory: smartchem_app
+        run: flutter build apk --release
+
+      - name: Rename APK
+        run: |
+          cp smartchem_app/build/app/outputs/flutter-apk/app-release.apk SmartChemTrack.apk
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: SmartChemTrack-APK
+          path: SmartChemTrack.apk
+          retention-days: 30
+          if-no-files-found: error
