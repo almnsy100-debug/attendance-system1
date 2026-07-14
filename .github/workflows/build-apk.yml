@@ -1,4 +1,4 @@
-name: Build SmartChem Track v2.0.2
+name: Build SmartChem Track v2.0.3 Stable
 
 on:
   push:
@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 jobs:
-  build-v2:
+  build-apk:
     runs-on: ubuntu-latest
     timeout-minutes: 40
 
@@ -24,28 +24,26 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Show Flutter information
+      - name: Create Flutter Android project
         run: |
-          flutter --version
-          flutter doctor -v
+          rm -rf smartchem_v203
 
-      - name: Create Android project
-        run: |
-          rm -rf smartchem_v2
-          flutter create smartchem_v2 \
+          flutter create smartchem_v203 \
             --platforms=android \
             --org om.smartchem \
-            --project-name smartchem_track_v2
+            --project-name smartchem_track_v203
 
       - name: Write pubspec
-        working-directory: smartchem_v2
+        working-directory: smartchem_v203
         shell: bash
         run: |
+          rm -f analysis_options.yaml
+
           cat > pubspec.yaml <<'PUBSPEC'
-          name: smartchem_track_v2
-          description: Smart laboratory materials tracking application
+          name: smartchem_track_v203
+          description: SmartChem laboratory tracking application
           publish_to: "none"
-          version: 2.0.2+4
+          version: 2.0.3+5
 
           environment:
             sdk: ">=3.5.0 <4.0.0"
@@ -54,7 +52,6 @@ jobs:
             flutter:
               sdk: flutter
             mobile_scanner: 7.2.1
-            intl: 0.20.3
 
           dev_dependencies:
             flutter_test:
@@ -67,14 +64,11 @@ jobs:
           flutter pub get
 
       - name: Write SmartChem application
-        working-directory: smartchem_v2
+        working-directory: smartchem_v203
         shell: bash
         run: |
           cat > lib/main.dart <<'DART'
-          import 'dart:async';
-
           import 'package:flutter/material.dart';
-          import 'package:intl/intl.dart';
           import 'package:mobile_scanner/mobile_scanner.dart';
 
           void main() {
@@ -88,8 +82,8 @@ jobs:
             @override
             Widget build(BuildContext context) {
               return MaterialApp(
+                title: 'SmartChem Track',
                 debugShowCheckedModeBanner: false,
-                title: 'SmartChem Track v2.0.2',
                 builder: (context, child) {
                   return Directionality(
                     textDirection: TextDirection.rtl,
@@ -103,8 +97,8 @@ jobs:
                   ),
                   scaffoldBackgroundColor: const Color(0xFFF4F8F8),
                   inputDecorationTheme: const InputDecorationTheme(
-                    border: OutlineInputBorder(),
                     filled: true,
+                    border: OutlineInputBorder(),
                   ),
                 ),
                 home: const LoginScreen(),
@@ -183,22 +177,18 @@ jobs:
             bool isApproved;
 
             double get remainingQuantity {
-              final remaining = totalQuantity - usedQuantity;
+              final value = totalQuantity - usedQuantity;
 
-              if (remaining < 0) {
+              if (value < 0) {
                 return 0.0;
               }
 
-              return remaining;
+              return value;
             }
 
             MaterialStatus get status {
               if (remainingQuantity <= 0) {
                 return MaterialStatus.empty;
-              }
-
-              if (!isApproved) {
-                return MaterialStatus.unapproved;
               }
 
               final now = DateTime.now();
@@ -217,6 +207,10 @@ jobs:
 
               if (expiry.isBefore(today)) {
                 return MaterialStatus.expired;
+              }
+
+              if (!isApproved) {
+                return MaterialStatus.unapproved;
               }
 
               if (expiry.difference(today).inDays <=
@@ -251,23 +245,40 @@ jobs:
               required this.rawValue,
               required this.gtin,
               required this.lot,
-              required this.catalogNumber,
               required this.serialNumber,
+              required this.catalogNumber,
               required this.expiryDate,
             });
 
             final String rawValue;
             final String gtin;
             final String lot;
-            final String catalogNumber;
             final String serialNumber;
+            final String catalogNumber;
             final DateTime? expiryDate;
           }
 
+          class VariableField {
+            const VariableField({
+              required this.value,
+              required this.nextIndex,
+            });
+
+            final String value;
+            final int nextIndex;
+          }
+
           class AppStore {
+            static AppUser? currentUser;
+
             static int nearExpiryDays = 30;
 
-            static AppUser? currentUser;
+            static String scanButtonName =
+                'مسح Data Matrix أو QR أو الباركود';
+
+            static String inventoryButtonName = 'المخزون';
+
+            static String reportsButtonName = 'التقارير';
 
             static final List<AppUser> users = [
               AppUser(
@@ -285,6 +296,7 @@ jobs:
             ];
 
             static final List<LabMaterial> materials = [];
+
             static final List<UsageRecord> usageRecords = [];
 
             static AppUser? login(
@@ -303,18 +315,83 @@ jobs:
             }
 
             static int countStatus(
-              MaterialStatus requiredStatus,
+              MaterialStatus status,
             ) {
               return materials
                   .where(
-                    (material) =>
-                        material.status == requiredStatus,
+                    (material) => material.status == status,
                   )
                   .length;
             }
           }
 
-          ParsedBarcode parseGs1Barcode(String input) {
+          String formatDate(DateTime date) {
+            final day =
+                date.day.toString().padLeft(2, '0');
+
+            final month =
+                date.month.toString().padLeft(2, '0');
+
+            return '$day/$month/${date.year}';
+          }
+
+          String formatDateTime(DateTime date) {
+            final hour =
+                date.hour.toString().padLeft(2, '0');
+
+            final minute =
+                date.minute.toString().padLeft(2, '0');
+
+            return '${formatDate(date)} $hour:$minute';
+          }
+
+          DateTime? parseGs1Expiry(String value) {
+            if (!RegExp(r'^\d{6}$').hasMatch(value)) {
+              return null;
+            }
+
+            final year =
+                2000 + int.parse(value.substring(0, 2));
+
+            final month =
+                int.parse(value.substring(2, 4));
+
+            int day =
+                int.parse(value.substring(4, 6));
+
+            if (month < 1 || month > 12) {
+              return null;
+            }
+
+            final lastDay =
+                DateTime(year, month + 1, 0).day;
+
+            if (day == 0 || day > lastDay) {
+              day = lastDay;
+            }
+
+            return DateTime(year, month, day);
+          }
+
+          VariableField readVariableField(
+            String value,
+            int start,
+          ) {
+            int end = start;
+
+            while (end < value.length &&
+                value.codeUnitAt(end) != 29) {
+              end++;
+            }
+
+            return VariableField(
+              value: value.substring(start, end).trim(),
+              nextIndex:
+                  end < value.length ? end + 1 : end,
+            );
+          }
+
+          ParsedBarcode parseBarcode(String input) {
             String raw = input.trim();
 
             raw = raw.replaceAll(
@@ -327,40 +404,12 @@ jobs:
               raw = raw.substring(3);
             }
 
-            String findParenthesized(String pattern) {
+            String findField(String pattern) {
               return RegExp(pattern)
                       .firstMatch(raw)
                       ?.group(1)
                       ?.trim() ??
                   '';
-            }
-
-            DateTime? parseExpiry(String value) {
-              if (!RegExp(r'^\d{6}$').hasMatch(value)) {
-                return null;
-              }
-
-              final year =
-                  2000 + int.parse(value.substring(0, 2));
-
-              final month =
-                  int.parse(value.substring(2, 4));
-
-              int day =
-                  int.parse(value.substring(4, 6));
-
-              if (month < 1 || month > 12) {
-                return null;
-              }
-
-              final lastDay =
-                  DateTime(year, month + 1, 0).day;
-
-              if (day == 0 || day > lastDay) {
-                day = lastDay;
-              }
-
-              return DateTime(year, month, day);
             }
 
             if (raw.contains('(01)') ||
@@ -369,30 +418,31 @@ jobs:
                 raw.contains('(21)') ||
                 raw.contains('(240)')) {
               final expiryCode =
-                  findParenthesized(r'\(17\)(\d{6})');
+                  findField(r'\(17\)(\d{6})');
 
               return ParsedBarcode(
                 rawValue: input,
-                gtin: findParenthesized(
+                gtin: findField(
                   r'\(01\)(\d{14})',
                 ),
-                lot: findParenthesized(
+                lot: findField(
                   r'\(10\)(.*?)(?=\(\d{2,3}\)|$)',
                 ),
-                serialNumber: findParenthesized(
+                serialNumber: findField(
                   r'\(21\)(.*?)(?=\(\d{2,3}\)|$)',
                 ),
-                catalogNumber: findParenthesized(
+                catalogNumber: findField(
                   r'\(240\)(.*?)(?=\(\d{2,3}\)|$)',
                 ),
-                expiryDate: parseExpiry(expiryCode),
+                expiryDate:
+                    parseGs1Expiry(expiryCode),
               );
             }
 
             String gtin = '';
             String lot = '';
-            String catalogNumber = '';
             String serialNumber = '';
+            String catalogNumber = '';
             DateTime? expiryDate;
 
             int index = 0;
@@ -416,7 +466,7 @@ jobs:
 
               if (raw.startsWith('17', index) &&
                   index + 8 <= raw.length) {
-                expiryDate = parseExpiry(
+                expiryDate = parseGs1Expiry(
                   raw.substring(
                     index + 2,
                     index + 8,
@@ -428,35 +478,35 @@ jobs:
               }
 
               if (raw.startsWith('240', index)) {
-                final result = readVariableField(
+                final field = readVariableField(
                   raw,
                   index + 3,
                 );
 
-                catalogNumber = result.$1;
-                index = result.$2;
+                catalogNumber = field.value;
+                index = field.nextIndex;
                 continue;
               }
 
               if (raw.startsWith('21', index)) {
-                final result = readVariableField(
+                final field = readVariableField(
                   raw,
                   index + 2,
                 );
 
-                serialNumber = result.$1;
-                index = result.$2;
+                serialNumber = field.value;
+                index = field.nextIndex;
                 continue;
               }
 
               if (raw.startsWith('10', index)) {
-                final result = readVariableField(
+                final field = readVariableField(
                   raw,
                   index + 2,
                 );
 
-                lot = result.$1;
-                index = result.$2;
+                lot = field.value;
+                index = field.nextIndex;
                 continue;
               }
 
@@ -467,27 +517,52 @@ jobs:
               rawValue: input,
               gtin: gtin,
               lot: lot,
-              catalogNumber: catalogNumber,
               serialNumber: serialNumber,
+              catalogNumber: catalogNumber,
               expiryDate: expiryDate,
             );
           }
 
-          (String, int) readVariableField(
-            String raw,
-            int start,
+          Color materialStatusColor(
+            MaterialStatus status,
           ) {
-            int end = start;
+            switch (status) {
+              case MaterialStatus.valid:
+                return Colors.green;
 
-            while (end < raw.length &&
-                raw.codeUnitAt(end) != 29) {
-              end++;
+              case MaterialStatus.nearExpiry:
+                return Colors.amber;
+
+              case MaterialStatus.expired:
+                return Colors.red;
+
+              case MaterialStatus.unapproved:
+                return Colors.orange;
+
+              case MaterialStatus.empty:
+                return Colors.grey;
             }
+          }
 
-            return (
-              raw.substring(start, end).trim(),
-              end < raw.length ? end + 1 : end,
-            );
+          String materialStatusName(
+            MaterialStatus status,
+          ) {
+            switch (status) {
+              case MaterialStatus.valid:
+                return 'صالح';
+
+              case MaterialStatus.nearExpiry:
+                return 'قريب الانتهاء';
+
+              case MaterialStatus.expired:
+                return 'منتهي';
+
+              case MaterialStatus.unapproved:
+                return 'غير معتمد';
+
+              case MaterialStatus.empty:
+                return 'نفدت الكمية';
+            }
           }
 
           class LoginScreen extends StatefulWidget {
@@ -499,11 +574,14 @@ jobs:
             }
           }
 
-          class _LoginScreenState extends State<LoginScreen> {
-            final TextEditingController usernameController =
+          class _LoginScreenState
+              extends State<LoginScreen> {
+            final TextEditingController
+                usernameController =
                 TextEditingController(text: 'admin');
 
-            final TextEditingController passwordController =
+            final TextEditingController
+                passwordController =
                 TextEditingController(text: '1234');
 
             String errorMessage = '';
@@ -547,16 +625,20 @@ jobs:
                     child: SingleChildScrollView(
                       padding: const EdgeInsets.all(24),
                       child: ConstrainedBox(
-                        constraints: const BoxConstraints(
+                        constraints:
+                            const BoxConstraints(
                           maxWidth: 520,
                         ),
                         child: Card(
                           child: Padding(
-                            padding: const EdgeInsets.all(24),
+                            padding:
+                                const EdgeInsets.all(24),
                             child: Column(
-                              mainAxisSize: MainAxisSize.min,
+                              mainAxisSize:
+                                  MainAxisSize.min,
                               crossAxisAlignment:
-                                  CrossAxisAlignment.stretch,
+                                  CrossAxisAlignment
+                                      .stretch,
                               children: [
                                 const CircleAvatar(
                                   radius: 44,
@@ -565,18 +647,21 @@ jobs:
                                     size: 50,
                                   ),
                                 ),
-                                const SizedBox(height: 16),
+                                const SizedBox(height: 15),
                                 const Text(
                                   'SmartChem Track',
-                                  textAlign: TextAlign.center,
+                                  textAlign:
+                                      TextAlign.center,
                                   style: TextStyle(
                                     fontSize: 28,
-                                    fontWeight: FontWeight.bold,
+                                    fontWeight:
+                                        FontWeight.bold,
                                   ),
                                 ),
                                 const Text(
-                                  'الإصدار التجريبي 2.0.2',
-                                  textAlign: TextAlign.center,
+                                  'الإصدار التجريبي 2.0.3',
+                                  textAlign:
+                                      TextAlign.center,
                                 ),
                                 const SizedBox(height: 24),
                                 TextField(
@@ -584,9 +669,11 @@ jobs:
                                       usernameController,
                                   decoration:
                                       const InputDecoration(
-                                    labelText: 'اسم المستخدم',
-                                    prefixIcon:
-                                        Icon(Icons.person_outline),
+                                    labelText:
+                                        'اسم المستخدم',
+                                    prefixIcon: Icon(
+                                      Icons.person_outline,
+                                    ),
                                   ),
                                 ),
                                 const SizedBox(height: 12),
@@ -594,21 +681,27 @@ jobs:
                                   controller:
                                       passwordController,
                                   obscureText: true,
-                                  onSubmitted: (_) => login(),
+                                  onSubmitted:
+                                      (_) => login(),
                                   decoration:
                                       const InputDecoration(
-                                    labelText: 'كلمة المرور',
-                                    prefixIcon:
-                                        Icon(Icons.lock_outline),
+                                    labelText:
+                                        'كلمة المرور',
+                                    prefixIcon: Icon(
+                                      Icons.lock_outline,
+                                    ),
                                   ),
                                 ),
-                                if (errorMessage.isNotEmpty) ...[
+                                if (errorMessage
+                                    .isNotEmpty) ...[
                                   const SizedBox(height: 10),
                                   Text(
                                     errorMessage,
-                                    style: const TextStyle(
+                                    style:
+                                        const TextStyle(
                                       color: Colors.red,
-                                      fontWeight: FontWeight.bold,
+                                      fontWeight:
+                                          FontWeight.bold,
                                     ),
                                   ),
                                 ],
@@ -616,7 +709,8 @@ jobs:
                                 FilledButton(
                                   onPressed: login,
                                   child: const Padding(
-                                    padding: EdgeInsets.symmetric(
+                                    padding:
+                                        EdgeInsets.symmetric(
                                       vertical: 14,
                                     ),
                                     child: Text('دخول'),
@@ -624,9 +718,10 @@ jobs:
                                 ),
                                 const SizedBox(height: 12),
                                 const Text(
-                                  'المستخدم الرئيسي: admin / 1234\n'
-                                  'المستخدم العادي: staff / 1234',
-                                  textAlign: TextAlign.center,
+                                  'الرئيسي: admin / 1234\n'
+                                  'الموظف: staff / 1234',
+                                  textAlign:
+                                      TextAlign.center,
                                 ),
                               ],
                             ),
@@ -649,10 +744,13 @@ jobs:
             }
           }
 
-          class _HomeScreenState extends State<HomeScreen> {
+          class _HomeScreenState
+              extends State<HomeScreen> {
             bool employeeMode = false;
 
-            Future<void> openScreen(Widget screen) async {
+            Future<void> openScreen(
+              Widget screen,
+            ) async {
               await Navigator.of(context).push(
                 MaterialPageRoute<void>(
                   builder: (_) => screen,
@@ -669,7 +767,8 @@ jobs:
 
               Navigator.of(context).pushReplacement(
                 MaterialPageRoute<void>(
-                  builder: (_) => const LoginScreen(),
+                  builder: (_) =>
+                      const LoginScreen(),
                 ),
               );
             }
@@ -680,29 +779,34 @@ jobs:
 
               return Scaffold(
                 appBar: AppBar(
-                  title:
-                      const Text('SmartChem Track v2.0.2'),
+                  title: const Text(
+                    'SmartChem Track v2.0.3',
+                  ),
                   actions: [
                     if (user.isAdmin)
                       IconButton(
                         tooltip: employeeMode
-                            ? 'الرجوع إلى وضع الإدارة'
+                            ? 'الرجوع إلى الإدارة'
                             : 'الدخول كمستخدم عادي',
                         onPressed: () {
                           setState(() {
-                            employeeMode = !employeeMode;
+                            employeeMode =
+                                !employeeMode;
                           });
                         },
                         icon: Icon(
                           employeeMode
-                              ? Icons.admin_panel_settings
+                              ? Icons
+                                  .admin_panel_settings
                               : Icons.person_outline,
                         ),
                       ),
                     IconButton(
                       tooltip: 'تسجيل الخروج',
                       onPressed: logout,
-                      icon: const Icon(Icons.logout),
+                      icon: const Icon(
+                        Icons.logout,
+                      ),
                     ),
                   ],
                 ),
@@ -711,14 +815,15 @@ jobs:
                   children: [
                     Text(
                       'مرحبًا، ${user.name}',
-                      style:
-                          Theme.of(context).textTheme.titleLarge,
+                      style: Theme.of(context)
+                          .textTheme
+                          .titleLarge,
                     ),
                     if (employeeMode)
                       const Text(
-                        'أنت الآن تستخدم واجهة الموظف العادي',
+                        'أنت الآن داخل واجهة المستخدم العادي',
                       ),
-                    const SizedBox(height: 16),
+                    const SizedBox(height: 15),
                     GridView.count(
                       crossAxisCount: 2,
                       shrinkWrap: true,
@@ -730,29 +835,35 @@ jobs:
                       children: [
                         StatusCard(
                           title: 'صالح',
-                          count: AppStore.countStatus(
+                          value:
+                              AppStore.countStatus(
                             MaterialStatus.valid,
                           ),
                           color: Colors.green,
                         ),
                         StatusCard(
                           title: 'قريب الانتهاء',
-                          count: AppStore.countStatus(
-                            MaterialStatus.nearExpiry,
+                          value:
+                              AppStore.countStatus(
+                            MaterialStatus
+                                .nearExpiry,
                           ),
                           color: Colors.amber,
                         ),
                         StatusCard(
                           title: 'منتهي',
-                          count: AppStore.countStatus(
+                          value:
+                              AppStore.countStatus(
                             MaterialStatus.expired,
                           ),
                           color: Colors.red,
                         ),
                         StatusCard(
                           title: 'غير معتمد',
-                          count: AppStore.countStatus(
-                            MaterialStatus.unapproved,
+                          value:
+                              AppStore.countStatus(
+                            MaterialStatus
+                                .unapproved,
                           ),
                           color: Colors.orange,
                         ),
@@ -762,65 +873,88 @@ jobs:
                     if (user.canScan)
                       FilledButton.icon(
                         onPressed: () {
-                          openScreen(const ScannerScreen());
+                          openScreen(
+                            const ScannerScreen(),
+                          );
                         },
-                        icon:
-                            const Icon(Icons.qr_code_scanner),
-                        label: const Padding(
-                          padding: EdgeInsets.symmetric(
+                        icon: const Icon(
+                          Icons.qr_code_scanner,
+                        ),
+                        label: Padding(
+                          padding:
+                              const EdgeInsets.symmetric(
                             vertical: 15,
                           ),
                           child: Text(
-                            'مسح Data Matrix أو QR أو الباركود',
+                            AppStore.scanButtonName,
                           ),
                         ),
                       ),
                     const SizedBox(height: 10),
                     OutlinedButton.icon(
                       onPressed: () {
-                        openScreen(const InventoryScreen());
+                        openScreen(
+                          const InventoryScreen(),
+                        );
                       },
                       icon: const Icon(
                         Icons.inventory_2_outlined,
                       ),
-                      label: const Padding(
-                        padding: EdgeInsets.symmetric(
+                      label: Padding(
+                        padding:
+                            const EdgeInsets.symmetric(
                           vertical: 13,
                         ),
-                        child: Text('المخزون'),
+                        child: Text(
+                          AppStore.inventoryButtonName,
+                        ),
                       ),
                     ),
                     if (user.canViewReports) ...[
                       const SizedBox(height: 10),
                       OutlinedButton.icon(
                         onPressed: () {
-                          openScreen(const ReportsScreen());
+                          openScreen(
+                            const ReportsScreen(),
+                          );
                         },
-                        icon:
-                            const Icon(Icons.assessment_outlined),
-                        label: const Padding(
-                          padding: EdgeInsets.symmetric(
+                        icon: const Icon(
+                          Icons.assessment_outlined,
+                        ),
+                        label: Padding(
+                          padding:
+                              const EdgeInsets
+                                  .symmetric(
                             vertical: 13,
                           ),
-                          child: Text('التقارير'),
+                          child: Text(
+                            AppStore
+                                .reportsButtonName,
+                          ),
                         ),
                       ),
                     ],
-                    if (user.isAdmin && !employeeMode) ...[
+                    if (user.isAdmin &&
+                        !employeeMode) ...[
                       const SizedBox(height: 10),
                       FilledButton.tonalIcon(
                         onPressed: () {
-                          openScreen(const AdminScreen());
+                          openScreen(
+                            const AdminScreen(),
+                          );
                         },
                         icon: const Icon(
-                          Icons.admin_panel_settings,
+                          Icons
+                              .admin_panel_settings,
                         ),
                         label: const Padding(
-                          padding: EdgeInsets.symmetric(
+                          padding:
+                              EdgeInsets.symmetric(
                             vertical: 13,
                           ),
-                          child:
-                              Text('لوحة المستخدم الرئيسي'),
+                          child: Text(
+                            'لوحة المستخدم الرئيسي',
+                          ),
                         ),
                       ),
                     ],
@@ -834,12 +968,12 @@ jobs:
             const StatusCard({
               super.key,
               required this.title,
-              required this.count,
+              required this.value,
               required this.color,
             });
 
             final String title;
-            final int count;
+            final int value;
             final Color color;
 
             @override
@@ -860,10 +994,11 @@ jobs:
                         MainAxisAlignment.center,
                     children: [
                       Text(
-                        count.toString(),
+                        value.toString(),
                         style: const TextStyle(
                           fontSize: 28,
-                          fontWeight: FontWeight.bold,
+                          fontWeight:
+                              FontWeight.bold,
                         ),
                       ),
                       Text(
@@ -887,158 +1022,63 @@ jobs:
           }
 
           class _ScannerScreenState
-              extends State<ScannerScreen>
-              with WidgetsBindingObserver {
-            final MobileScannerController controller =
-                MobileScannerController(
-              autoStart: false,
-              facing: CameraFacing.back,
-              detectionSpeed: DetectionSpeed.noDuplicates,
-            );
-
-            StreamSubscription<BarcodeCapture>? subscription;
-
+              extends State<ScannerScreen> {
             bool processing = false;
-            bool startingCamera = false;
-            String cameraError = '';
 
-            @override
-            void initState() {
-              super.initState();
-
-              WidgetsBinding.instance.addObserver(this);
-
-              listenToBarcodes();
-
-              WidgetsBinding.instance
-                  .addPostFrameCallback((_) {
-                unawaited(startCamera());
-              });
-            }
-
-            void listenToBarcodes() {
-              subscription ??=
-                  controller.barcodes.listen(handleBarcode);
-            }
-
-            Future<void> startCamera() async {
-              if (startingCamera) {
-                return;
-              }
-
-              startingCamera = true;
-
-              try {
-                listenToBarcodes();
-                await controller.start();
-
-                if (mounted) {
-                  setState(() {
-                    cameraError = '';
-                  });
-                }
-              } catch (error) {
-                if (mounted) {
-                  setState(() {
-                    cameraError =
-                        'تعذر تشغيل الكاميرا.\n'
-                        'تأكد من منح التطبيق صلاحية الكاميرا، '
-                        'ثم اضغط إعادة المحاولة.\n\n'
-                        '$error';
-                  });
-                }
-              } finally {
-                startingCamera = false;
-              }
-            }
-
-            Future<void> stopCamera() async {
-              await subscription?.cancel();
-              subscription = null;
-
-              try {
-                await controller.stop();
-              } catch (_) {
-                // تجاهل خطأ الإيقاف.
-              }
-            }
-
-            @override
-            void didChangeAppLifecycleState(
-              AppLifecycleState state,
-            ) {
-              if (!controller.value.hasCameraPermission) {
-                return;
-              }
-
-              if (state == AppLifecycleState.resumed) {
-                listenToBarcodes();
-                unawaited(startCamera());
-                return;
-              }
-
-              if (state == AppLifecycleState.inactive ||
-                  state == AppLifecycleState.paused ||
-                  state == AppLifecycleState.detached ||
-                  state == AppLifecycleState.hidden) {
-                unawaited(stopCamera());
-              }
-            }
-
-            Future<void> handleBarcode(
-              BarcodeCapture capture,
+            Future<void> processCode(
+              String rawValue,
             ) async {
               if (processing ||
-                  capture.barcodes.isEmpty) {
-                return;
-              }
-
-              final rawValue =
-                  capture.barcodes.first.rawValue;
-
-              if (rawValue == null ||
                   rawValue.trim().isEmpty) {
                 return;
               }
 
-              await processCode(rawValue);
-            }
-
-            Future<void> processCode(String rawValue) async {
-              if (processing) {
-                return;
-              }
-
-              processing = true;
-
-              await stopCamera();
+              setState(() {
+                processing = true;
+              });
 
               final parsed =
-                  parseGs1Barcode(rawValue);
-
-              if (!mounted) {
-                return;
-              }
+                  parseBarcode(rawValue);
 
               await Navigator.of(context).push(
                 MaterialPageRoute<void>(
-                  builder: (_) => MaterialFormScreen(
+                  builder: (_) =>
+                      MaterialFormScreen(
                     parsedBarcode: parsed,
                   ),
                 ),
               );
 
-              if (!mounted) {
+              if (mounted) {
+                setState(() {
+                  processing = false;
+                });
+              }
+            }
+
+            void onDetect(
+              BarcodeCapture capture,
+            ) {
+              if (processing ||
+                  capture.barcodes.isEmpty) {
                 return;
               }
 
-              processing = false;
-              listenToBarcodes();
-              await startCamera();
+              for (final barcode
+                  in capture.barcodes) {
+                final rawValue =
+                    barcode.rawValue;
+
+                if (rawValue != null &&
+                    rawValue.trim().isNotEmpty) {
+                  processCode(rawValue);
+                  return;
+                }
+              }
             }
 
             Future<void> manualEntry() async {
-              final controller =
+              final textController =
                   TextEditingController(
                 text:
                     '(01)00380740150005'
@@ -1047,74 +1087,57 @@ jobs:
                     '(240)09P9510',
               );
 
-              final value =
+              final result =
                   await showDialog<String>(
                 context: context,
                 builder: (dialogContext) {
                   return AlertDialog(
-                    title:
-                        const Text('إدخال الكود يدويًا'),
+                    title: const Text(
+                      'إدخال كود للتجربة',
+                    ),
                     content: TextField(
-                      controller: controller,
+                      controller:
+                          textController,
                       maxLines: 4,
                       decoration:
                           const InputDecoration(
-                        labelText: 'الكود',
+                        labelText:
+                            'الباركود أو GS1',
                       ),
                     ),
                     actions: [
                       TextButton(
                         onPressed: () {
-                          Navigator.of(dialogContext).pop();
+                          Navigator.of(
+                            dialogContext,
+                          ).pop();
                         },
-                        child: const Text('إلغاء'),
+                        child:
+                            const Text('إلغاء'),
                       ),
                       FilledButton(
                         onPressed: () {
-                          Navigator.of(dialogContext).pop(
-                            controller.text.trim(),
+                          Navigator.of(
+                            dialogContext,
+                          ).pop(
+                            textController.text
+                                .trim(),
                           );
                         },
-                        child: const Text('متابعة'),
+                        child:
+                            const Text('متابعة'),
                       ),
                     ],
                   );
                 },
               );
 
-              controller.dispose();
+              textController.dispose();
 
-              if (value != null && value.isNotEmpty) {
-                await processCode(value);
+              if (result != null &&
+                  result.isNotEmpty) {
+                await processCode(result);
               }
-            }
-
-            Future<void> toggleTorch() async {
-              try {
-                await controller.toggleTorch();
-              } catch (_) {
-                if (mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text(
-                        'تعذر تشغيل إضاءة الكاميرا',
-                      ),
-                    ),
-                  );
-                }
-              }
-            }
-
-            @override
-            void dispose() {
-              WidgetsBinding.instance.removeObserver(this);
-
-              unawaited(subscription?.cancel());
-              subscription = null;
-
-              unawaited(controller.dispose());
-
-              super.dispose();
             }
 
             @override
@@ -1122,18 +1145,15 @@ jobs:
               return Scaffold(
                 backgroundColor: Colors.black,
                 appBar: AppBar(
-                  title: const Text('مسح العبوة'),
+                  title:
+                      const Text('مسح العبوة'),
                   actions: [
                     IconButton(
-                      tooltip: 'إدخال يدوي',
+                      tooltip:
+                          'إدخال يدوي للتجربة',
                       onPressed: manualEntry,
-                      icon: const Icon(Icons.keyboard),
-                    ),
-                    IconButton(
-                      tooltip: 'الإضاءة',
-                      onPressed: toggleTorch,
                       icon: const Icon(
-                        Icons.flashlight_on_outlined,
+                        Icons.keyboard,
                       ),
                     ),
                   ],
@@ -1142,73 +1162,108 @@ jobs:
                   fit: StackFit.expand,
                   children: [
                     MobileScanner(
-                      controller: controller,
-                      onDetect: (_) {},
-                    ),
-                    Center(
-                      child: Container(
-                        width: 290,
-                        height: 190,
-                        decoration: BoxDecoration(
-                          border: Border.all(
-                            color: Colors.white,
-                            width: 3,
+                      onDetect: onDetect,
+                      errorBuilder:
+                          (context, error) {
+                        return ColoredBox(
+                          color: Colors.black,
+                          child: Center(
+                            child: Card(
+                              margin:
+                                  const EdgeInsets
+                                      .all(25),
+                              child: Padding(
+                                padding:
+                                    const EdgeInsets
+                                        .all(20),
+                                child: Column(
+                                  mainAxisSize:
+                                      MainAxisSize
+                                          .min,
+                                  children: [
+                                    const Icon(
+                                      Icons
+                                          .camera_alt_outlined,
+                                      size: 55,
+                                    ),
+                                    const SizedBox(
+                                      height: 12,
+                                    ),
+                                    const Text(
+                                      'تعذر تشغيل الكاميرا',
+                                      style:
+                                          TextStyle(
+                                        fontWeight:
+                                            FontWeight
+                                                .bold,
+                                      ),
+                                    ),
+                                    const SizedBox(
+                                      height: 8,
+                                    ),
+                                    Text(
+                                      error
+                                          .errorCode
+                                          .message,
+                                      textAlign:
+                                          TextAlign
+                                              .center,
+                                    ),
+                                    const SizedBox(
+                                      height: 12,
+                                    ),
+                                    OutlinedButton(
+                                      onPressed:
+                                          manualEntry,
+                                      child:
+                                          const Text(
+                                        'إدخال الكود يدويًا',
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
                           ),
-                          borderRadius:
-                              BorderRadius.circular(18),
-                        ),
-                      ),
+                        );
+                      },
                     ),
-                    if (cameraError.isNotEmpty)
-                      Center(
-                        child: Card(
-                          margin: const EdgeInsets.all(25),
-                          child: Padding(
-                            padding:
-                                const EdgeInsets.all(20),
-                            child: Column(
-                              mainAxisSize:
-                                  MainAxisSize.min,
-                              children: [
-                                const Icon(
-                                  Icons.camera_alt_outlined,
-                                  size: 55,
-                                ),
-                                const SizedBox(height: 12),
-                                Text(
-                                  cameraError,
-                                  textAlign: TextAlign.center,
-                                ),
-                                const SizedBox(height: 12),
-                                FilledButton(
-                                  onPressed: startCamera,
-                                  child: const Text(
-                                    'إعادة المحاولة',
-                                  ),
-                                ),
-                                const SizedBox(height: 8),
-                                OutlinedButton(
-                                  onPressed: manualEntry,
-                                  child: const Text(
-                                    'إدخال الكود يدويًا',
-                                  ),
-                                ),
-                              ],
+                    IgnorePointer(
+                      child: Center(
+                        child: Container(
+                          width: 290,
+                          height: 190,
+                          decoration: BoxDecoration(
+                            border: Border.all(
+                              color: Colors.white,
+                              width: 3,
+                            ),
+                            borderRadius:
+                                BorderRadius.circular(
+                              18,
                             ),
                           ),
                         ),
                       ),
+                    ),
+                    if (processing)
+                      const Center(
+                        child:
+                            CircularProgressIndicator(),
+                      ),
                     const Positioned(
-                      right: 20,
                       left: 20,
+                      right: 20,
                       bottom: 28,
                       child: Card(
                         child: Padding(
-                          padding: EdgeInsets.all(14),
+                          padding:
+                              EdgeInsets.all(14),
                           child: Text(
                             'ضع Data Matrix أو QR '
                             'أو الباركود داخل الإطار',
-                            textAlign: TextAlign.center,
+                            textAlign:
+                                TextAlign.center,
                           ),
                         ),
                       ),
@@ -1219,7 +1274,8 @@ jobs:
             }
           }
 
-          class MaterialFormScreen extends StatefulWidget {
+          class MaterialFormScreen
+              extends StatefulWidget {
             const MaterialFormScreen({
               super.key,
               required this.parsedBarcode,
@@ -1228,14 +1284,16 @@ jobs:
             final ParsedBarcode parsedBarcode;
 
             @override
-            State<MaterialFormScreen> createState() {
+            State<MaterialFormScreen>
+                createState() {
               return _MaterialFormScreenState();
             }
           }
 
           class _MaterialFormScreenState
               extends State<MaterialFormScreen> {
-            final TextEditingController nameController =
+            final TextEditingController
+                nameController =
                 TextEditingController();
 
             final TextEditingController
@@ -1257,6 +1315,7 @@ jobs:
                 TextEditingController(text: '1');
 
             String materialType = 'Reagent';
+
             bool approved = false;
 
             late DateTime expiryDate;
@@ -1265,16 +1324,17 @@ jobs:
             void initState() {
               super.initState();
 
-              expiryDate =
-                  widget.parsedBarcode.expiryDate ??
-                      DateTime.now().add(
-                        const Duration(days: 365),
-                      );
+              expiryDate = widget
+                      .parsedBarcode.expiryDate ??
+                  DateTime.now().add(
+                    const Duration(days: 365),
+                  );
 
-              if (widget
-                  .parsedBarcode.serialNumber.isNotEmpty) {
+              if (widget.parsedBarcode
+                  .serialNumber.isNotEmpty) {
                 serialController.text =
-                    widget.parsedBarcode.serialNumber;
+                    widget.parsedBarcode
+                        .serialNumber;
               } else if (widget
                   .parsedBarcode.lot.isNotEmpty) {
                 serialController.text =
@@ -1288,15 +1348,21 @@ jobs:
             }
 
             void saveMaterial() {
-              final quantity = double.tryParse(
-                    quantityController.text,
-                  ) ??
-                  0.0;
+              final quantity =
+                  double.tryParse(
+                        quantityController.text,
+                      ) ??
+                      0.0;
 
-              if (nameController.text.trim().isEmpty ||
-                  deviceController.text.trim().isEmpty ||
+              if (nameController.text
+                      .trim()
+                      .isEmpty ||
+                  deviceController.text
+                      .trim()
+                      .isEmpty ||
                   quantity <= 0) {
-                ScaffoldMessenger.of(context).showSnackBar(
+                ScaffoldMessenger.of(context)
+                    .showSnackBar(
                   const SnackBar(
                     content: Text(
                       'أدخل اسم المادة والجهاز والكمية',
@@ -1313,22 +1379,29 @@ jobs:
                   id: DateTime.now()
                       .microsecondsSinceEpoch
                       .toString(),
-                  name: nameController.text.trim(),
+                  name:
+                      nameController.text.trim(),
                   type: materialType,
-                  rawBarcode:
-                      widget.parsedBarcode.rawValue,
-                  gtin: widget.parsedBarcode.gtin,
-                  lot: widget.parsedBarcode.lot,
-                  catalogNumber:
-                      widget.parsedBarcode.catalogNumber,
+                  rawBarcode: widget
+                      .parsedBarcode.rawValue,
+                  gtin:
+                      widget.parsedBarcode.gtin,
+                  lot:
+                      widget.parsedBarcode.lot,
+                  catalogNumber: widget
+                      .parsedBarcode
+                      .catalogNumber,
                   serialNumber:
                       serialController.text.trim(),
                   expiryDate: expiryDate,
-                  device: deviceController.text.trim(),
+                  device:
+                      deviceController.text.trim(),
                   department:
-                      departmentController.text.trim(),
+                      departmentController.text
+                          .trim(),
                   registeredBy:
-                      AppStore.currentUser?.name ?? '',
+                      AppStore.currentUser?.name ??
+                          '',
                   totalQuantity: quantity,
                   isApproved: approved,
                 ),
@@ -1344,20 +1417,23 @@ jobs:
               deviceController.dispose();
               departmentController.dispose();
               quantityController.dispose();
-
               super.dispose();
             }
 
             @override
             Widget build(BuildContext context) {
-              final user = AppStore.currentUser!;
+              final user =
+                  AppStore.currentUser!;
 
               return Scaffold(
                 appBar: AppBar(
-                  title: const Text('تسجيل المادة'),
+                  title: const Text(
+                    'تسجيل المادة',
+                  ),
                 ),
                 body: ListView(
-                  padding: const EdgeInsets.all(16),
+                  padding:
+                      const EdgeInsets.all(16),
                   children: [
                     TextField(
                       controller: nameController,
@@ -1367,8 +1443,9 @@ jobs:
                       ),
                     ),
                     const SizedBox(height: 12),
-                    DropdownButtonFormField<String>(
-                      initialValue: materialType,
+                    DropdownButtonFormField<
+                        String>(
+                      value: materialType,
                       decoration:
                           const InputDecoration(
                         labelText: 'نوع المادة',
@@ -1384,7 +1461,8 @@ jobs:
                         ),
                         DropdownMenuItem(
                           value: 'Calibrator',
-                          child: Text('Calibrator'),
+                          child:
+                              Text('Calibrator'),
                         ),
                       ],
                       onChanged: (value) {
@@ -1399,15 +1477,18 @@ jobs:
                     ),
                     const SizedBox(height: 12),
                     TextField(
-                      controller: serialController,
+                      controller:
+                          serialController,
                       decoration:
                           const InputDecoration(
-                        labelText: 'الرقم التسلسلي',
+                        labelText:
+                            'الرقم التسلسلي',
                       ),
                     ),
                     const SizedBox(height: 12),
                     TextField(
-                      controller: deviceController,
+                      controller:
+                          deviceController,
                       decoration:
                           const InputDecoration(
                         labelText: 'اسم الجهاز',
@@ -1415,7 +1496,8 @@ jobs:
                     ),
                     const SizedBox(height: 12),
                     TextField(
-                      controller: departmentController,
+                      controller:
+                          departmentController,
                       decoration:
                           const InputDecoration(
                         labelText: 'القسم',
@@ -1423,7 +1505,8 @@ jobs:
                     ),
                     const SizedBox(height: 12),
                     TextField(
-                      controller: quantityController,
+                      controller:
+                          quantityController,
                       keyboardType:
                           const TextInputType
                               .numberWithOptions(
@@ -1431,41 +1514,50 @@ jobs:
                       ),
                       decoration:
                           const InputDecoration(
-                        labelText: 'الكمية الأصلية',
+                        labelText:
+                            'الكمية الأصلية',
                       ),
                     ),
                     const SizedBox(height: 12),
                     Card(
                       child: ListTile(
-                        title:
-                            const Text('تاريخ الانتهاء'),
-                        subtitle: Text(
-                          DateFormat('dd/MM/yyyy')
-                              .format(expiryDate),
+                        title: const Text(
+                          'تاريخ الانتهاء',
                         ),
-                        trailing:
-                            const Icon(Icons.calendar_month),
+                        subtitle: Text(
+                          formatDate(
+                            expiryDate,
+                          ),
+                        ),
+                        trailing: const Icon(
+                          Icons.calendar_month,
+                        ),
                         onTap: () async {
                           final selected =
                               await showDatePicker(
                             context: context,
-                            initialDate: expiryDate,
-                            firstDate: DateTime(2020),
-                            lastDate: DateTime(2045),
+                            initialDate:
+                                expiryDate,
+                            firstDate:
+                                DateTime(2020),
+                            lastDate:
+                                DateTime(2045),
                           );
 
                           if (selected != null &&
                               mounted) {
                             setState(() {
-                              expiryDate = selected;
+                              expiryDate =
+                                  selected;
                             });
                           }
                         },
                       ),
                     ),
                     SwitchListTile(
-                      title:
-                          const Text('معتمد للاستخدام'),
+                      title: const Text(
+                        'معتمد للاستخدام',
+                      ),
                       subtitle: Text(
                         user.isAdmin
                             ? 'يمكنك اعتماد المادة'
@@ -1475,19 +1567,20 @@ jobs:
                       onChanged: user.isAdmin
                           ? (value) {
                               setState(() {
-                                approved = value;
+                                approved =
+                                    value;
                               });
                             }
                           : null,
                     ),
-                    if (widget
-                        .parsedBarcode.gtin.isNotEmpty)
+                    if (widget.parsedBarcode
+                        .gtin.isNotEmpty)
                       SelectableText(
                         'GTIN: '
                         '${widget.parsedBarcode.gtin}',
                       ),
-                    if (widget
-                        .parsedBarcode.lot.isNotEmpty)
+                    if (widget.parsedBarcode
+                        .lot.isNotEmpty)
                       SelectableText(
                         'LOT: '
                         '${widget.parsedBarcode.lot}',
@@ -1502,10 +1595,13 @@ jobs:
                     FilledButton(
                       onPressed: saveMaterial,
                       child: const Padding(
-                        padding: EdgeInsets.symmetric(
+                        padding:
+                            EdgeInsets.symmetric(
                           vertical: 14,
                         ),
-                        child: Text('حفظ المادة'),
+                        child: Text(
+                          'حفظ المادة',
+                        ),
                       ),
                     ),
                   ],
@@ -1514,41 +1610,13 @@ jobs:
             }
           }
 
-          Color statusColor(MaterialStatus status) {
-            switch (status) {
-              case MaterialStatus.valid:
-                return Colors.green;
-              case MaterialStatus.nearExpiry:
-                return Colors.amber;
-              case MaterialStatus.expired:
-                return Colors.red;
-              case MaterialStatus.unapproved:
-                return Colors.orange;
-              case MaterialStatus.empty:
-                return Colors.grey;
-            }
-          }
-
-          String statusName(MaterialStatus status) {
-            switch (status) {
-              case MaterialStatus.valid:
-                return 'صالح';
-              case MaterialStatus.nearExpiry:
-                return 'قريب الانتهاء';
-              case MaterialStatus.expired:
-                return 'منتهي';
-              case MaterialStatus.unapproved:
-                return 'غير معتمد';
-              case MaterialStatus.empty:
-                return 'نفدت الكمية';
-            }
-          }
-
-          class InventoryScreen extends StatefulWidget {
+          class InventoryScreen
+              extends StatefulWidget {
             const InventoryScreen({super.key});
 
             @override
-            State<InventoryScreen> createState() {
+            State<InventoryScreen>
+                createState() {
               return _InventoryScreenState();
             }
           }
@@ -1558,14 +1626,18 @@ jobs:
             Future<void> registerUsage(
               LabMaterial material,
             ) async {
-              final user = AppStore.currentUser!;
-              final status = material.status;
+              final user =
+                  AppStore.currentUser!;
+
+              final currentStatus =
+                  material.status;
 
               if (!user.canUseMaterials) {
-                ScaffoldMessenger.of(context).showSnackBar(
+                ScaffoldMessenger.of(context)
+                    .showSnackBar(
                   const SnackBar(
                     content: Text(
-                      'لا توجد لديك صلاحية تسجيل الاستخدام',
+                      'ليس لديك صلاحية تسجيل الاستخدام',
                     ),
                   ),
                 );
@@ -1573,17 +1645,28 @@ jobs:
                 return;
               }
 
-              if (status == MaterialStatus.expired ||
-                  status == MaterialStatus.unapproved ||
-                  status == MaterialStatus.empty) {
-                ScaffoldMessenger.of(context).showSnackBar(
+              if (currentStatus ==
+                      MaterialStatus.expired ||
+                  currentStatus ==
+                      MaterialStatus
+                          .unapproved ||
+                  currentStatus ==
+                      MaterialStatus.empty) {
+                ScaffoldMessenger.of(context)
+                    .showSnackBar(
                   SnackBar(
-                    backgroundColor: statusColor(status),
+                    backgroundColor:
+                        materialStatusColor(
+                      currentStatus,
+                    ),
                     content: Text(
-                      status == MaterialStatus.expired
+                      currentStatus ==
+                              MaterialStatus
+                                  .expired
                           ? 'لا يمكن الاستخدام: المادة منتهية'
-                          : status ==
-                                  MaterialStatus.unapproved
+                          : currentStatus ==
+                                  MaterialStatus
+                                      .unapproved
                               ? 'لا يمكن الاستخدام: المادة غير معتمدة'
                               : 'لا يمكن الاستخدام: نفدت الكمية',
                     ),
@@ -1593,11 +1676,13 @@ jobs:
                 return;
               }
 
-              if (status == MaterialStatus.nearExpiry) {
+              if (currentStatus ==
+                  MaterialStatus.nearExpiry) {
                 final accepted =
                     await showDialog<bool>(
                   context: context,
-                  builder: (dialogContext) {
+                  builder:
+                      (dialogContext) {
                     return AlertDialog(
                       title: const Text(
                         'تنبيه قرب انتهاء الصلاحية',
@@ -1605,73 +1690,93 @@ jobs:
                       content: Text(
                         '${material.name}\n'
                         'تاريخ الانتهاء: '
-                        '${DateFormat('dd/MM/yyyy').format(material.expiryDate)}',
+                        '${formatDate(material.expiryDate)}',
                       ),
                       actions: [
                         TextButton(
                           onPressed: () {
-                            Navigator.of(dialogContext)
-                                .pop(false);
+                            Navigator.of(
+                              dialogContext,
+                            ).pop(false);
                           },
-                          child: const Text('إلغاء'),
+                          child: const Text(
+                            'إلغاء',
+                          ),
                         ),
                         FilledButton(
                           onPressed: () {
-                            Navigator.of(dialogContext)
-                                .pop(true);
+                            Navigator.of(
+                              dialogContext,
+                            ).pop(true);
                           },
-                          child: const Text('متابعة'),
+                          child: const Text(
+                            'متابعة',
+                          ),
                         ),
                       ],
                     );
                   },
                 );
 
-                if (accepted != true || !mounted) {
+                if (accepted != true ||
+                    !mounted) {
                   return;
                 }
               }
 
               final quantityController =
-                  TextEditingController(text: '1');
+                  TextEditingController(
+                text: '1',
+              );
 
               final usedQuantity =
                   await showDialog<double>(
                 context: context,
-                builder: (dialogContext) {
+                builder:
+                    (dialogContext) {
                   return AlertDialog(
                     title: Text(
-                      'تسجيل استخدام ${material.name}',
+                      'تسجيل استخدام '
+                      '${material.name}',
                     ),
                     content: TextField(
-                      controller: quantityController,
+                      controller:
+                          quantityController,
                       keyboardType:
                           const TextInputType
                               .numberWithOptions(
                         decimal: true,
                       ),
-                      decoration: InputDecoration(
+                      decoration:
+                          InputDecoration(
                         labelText:
-                            'الكمية المستخدمة - المتبقي '
+                            'المستخدم - المتبقي '
                             '${material.remainingQuantity}',
                       ),
                     ),
                     actions: [
                       TextButton(
                         onPressed: () {
-                          Navigator.of(dialogContext).pop();
+                          Navigator.of(
+                            dialogContext,
+                          ).pop();
                         },
-                        child: const Text('إلغاء'),
+                        child:
+                            const Text('إلغاء'),
                       ),
                       FilledButton(
                         onPressed: () {
-                          Navigator.of(dialogContext).pop(
+                          Navigator.of(
+                            dialogContext,
+                          ).pop(
                             double.tryParse(
-                              quantityController.text,
+                              quantityController
+                                  .text,
                             ),
                           );
                         },
-                        child: const Text('حفظ'),
+                        child:
+                            const Text('حفظ'),
                       ),
                     ],
                   );
@@ -1683,23 +1788,32 @@ jobs:
               if (usedQuantity == null ||
                   usedQuantity <= 0 ||
                   usedQuantity >
-                      material.remainingQuantity) {
+                      material
+                          .remainingQuantity) {
                 return;
               }
 
               setState(() {
-                material.usedQuantity += usedQuantity;
-                material.openedAt ??= DateTime.now();
+                material.usedQuantity +=
+                    usedQuantity;
+
+                material.openedAt ??=
+                    DateTime.now();
 
                 AppStore.usageRecords.insert(
                   0,
                   UsageRecord(
-                    materialName: material.name,
-                    materialType: material.type,
-                    device: material.device,
+                    materialName:
+                        material.name,
+                    materialType:
+                        material.type,
+                    device:
+                        material.device,
                     employee: user.name,
-                    quantity: usedQuantity,
-                    dateTime: DateTime.now(),
+                    quantity:
+                        usedQuantity,
+                    dateTime:
+                        DateTime.now(),
                   ),
                 );
               });
@@ -1709,62 +1823,85 @@ jobs:
             Widget build(BuildContext context) {
               return Scaffold(
                 appBar: AppBar(
-                  title: const Text('المخزون'),
+                  title:
+                      const Text('المخزون'),
                 ),
-                body: AppStore.materials.isEmpty
+                body: AppStore
+                        .materials.isEmpty
                     ? const Center(
-                        child:
-                            Text('لا توجد مواد مسجلة'),
+                        child: Text(
+                          'لا توجد مواد مسجلة',
+                        ),
                       )
                     : ListView.separated(
                         padding:
-                            const EdgeInsets.all(12),
+                            const EdgeInsets
+                                .all(12),
                         itemCount:
-                            AppStore.materials.length,
-                        separatorBuilder: (_, __) {
-                          return const SizedBox(height: 8);
+                            AppStore
+                                .materials.length,
+                        separatorBuilder:
+                            (_, __) {
+                          return const SizedBox(
+                            height: 8,
+                          );
                         },
-                        itemBuilder: (_, index) {
+                        itemBuilder:
+                            (_, index) {
                           final material =
-                              AppStore.materials[index];
+                              AppStore
+                                      .materials[
+                                  index];
 
-                          final currentStatus =
+                          final status =
                               material.status;
 
                           return Card(
                             child: ListTile(
-                              leading: CircleAvatar(
+                              leading:
+                                  CircleAvatar(
                                 backgroundColor:
-                                    statusColor(
-                                  currentStatus,
+                                    materialStatusColor(
+                                  status,
                                 ),
-                                child: const Icon(
+                                child:
+                                    const Icon(
                                   Icons.science,
-                                  color: Colors.white,
+                                  color:
+                                      Colors.white,
                                 ),
                               ),
-                              title: Text(material.name),
+                              title: Text(
+                                material.name,
+                              ),
                               subtitle: Text(
                                 '${material.type} • '
                                 '${material.device}\n'
                                 'LOT: ${material.lot}\n'
                                 'الانتهاء: '
-                                '${DateFormat('dd/MM/yyyy').format(material.expiryDate)}\n'
+                                '${formatDate(material.expiryDate)}\n'
                                 'المتبقي: '
                                 '${material.remainingQuantity}',
                               ),
                               trailing: Text(
-                                statusName(currentStatus),
-                                style: TextStyle(
-                                  color: statusColor(
-                                    currentStatus,
+                                materialStatusName(
+                                  status,
+                                ),
+                                style:
+                                    TextStyle(
+                                  color:
+                                      materialStatusColor(
+                                    status,
                                   ),
                                   fontWeight:
-                                      FontWeight.bold,
+                                      FontWeight
+                                          .bold,
                                 ),
                               ),
                               onTap: () {
-                                registerUsage(material);
+                                registerUsage(
+                                  material,
+                                );
                               },
                             ),
                           );
@@ -1774,19 +1911,24 @@ jobs:
             }
           }
 
-          class ReportsScreen extends StatelessWidget {
+          class ReportsScreen
+              extends StatelessWidget {
             const ReportsScreen({super.key});
 
             List<UsageRecord> recordsFor(
               Duration duration,
             ) {
               final start =
-                  DateTime.now().subtract(duration);
+                  DateTime.now().subtract(
+                duration,
+              );
 
               return AppStore.usageRecords
                   .where(
                     (record) =>
-                        record.dateTime.isAfter(start),
+                        record.dateTime.isAfter(
+                      start,
+                    ),
                   )
                   .toList();
             }
@@ -1796,9 +1938,11 @@ jobs:
               String title,
               Duration duration,
             ) {
-              final records = recordsFor(duration);
+              final records =
+                  recordsFor(duration);
 
-              final total = records.fold<double>(
+              final total =
+                  records.fold<double>(
                 0.0,
                 (sum, record) =>
                     sum + record.quantity,
@@ -1806,7 +1950,8 @@ jobs:
 
               return Card(
                 child: Padding(
-                  padding: const EdgeInsets.all(16),
+                  padding:
+                      const EdgeInsets.all(16),
                   child: Column(
                     crossAxisAlignment:
                         CrossAxisAlignment.start,
@@ -1819,10 +1964,12 @@ jobs:
                       ),
                       const SizedBox(height: 8),
                       Text(
-                        'عدد العمليات: ${records.length}',
+                        'عدد عمليات الاستخدام: '
+                        '${records.length}',
                       ),
                       Text(
-                        'إجمالي الكمية المستخدمة: $total',
+                        'إجمالي الكمية المستخدمة: '
+                        '$total',
                       ),
                     ],
                   ),
@@ -1833,10 +1980,13 @@ jobs:
             @override
             Widget build(BuildContext context) {
               return Scaffold(
-                appBar:
-                    AppBar(title: const Text('التقارير')),
+                appBar: AppBar(
+                  title:
+                      const Text('التقارير'),
+                ),
                 body: ListView(
-                  padding: const EdgeInsets.all(16),
+                  padding:
+                      const EdgeInsets.all(16),
                   children: [
                     reportCard(
                       context,
@@ -1858,37 +2008,46 @@ jobs:
                     const SizedBox(height: 18),
                     Text(
                       'آخر عمليات الاستخدام',
-                      style:
-                          Theme.of(context).textTheme.titleLarge,
+                      style: Theme.of(context)
+                          .textTheme
+                          .titleLarge,
                     ),
                     const SizedBox(height: 8),
-                    if (AppStore.usageRecords.isEmpty)
+                    if (AppStore
+                        .usageRecords.isEmpty)
                       const Card(
                         child: Padding(
-                          padding: EdgeInsets.all(16),
+                          padding:
+                              EdgeInsets.all(16),
                           child: Text(
                             'لا توجد عمليات استخدام',
                           ),
                         ),
                       ),
-                    ...AppStore.usageRecords.take(20).map(
+                    ...AppStore.usageRecords
+                        .take(20)
+                        .map(
                       (record) {
                         return Padding(
                           padding:
-                              const EdgeInsets.only(
+                              const EdgeInsets
+                                  .only(
                             bottom: 8,
                           ),
                           child: Card(
                             child: ListTile(
-                              title:
-                                  Text(record.materialName),
+                              title: Text(
+                                record
+                                    .materialName,
+                              ),
                               subtitle: Text(
                                 '${record.employee} • '
                                 '${record.device}\n'
-                                '${DateFormat('dd/MM/yyyy HH:mm').format(record.dateTime)}',
+                                '${formatDateTime(record.dateTime)}',
                               ),
                               trailing: Text(
-                                record.quantity.toString(),
+                                record.quantity
+                                    .toString(),
                               ),
                             ),
                           ),
@@ -1901,11 +2060,13 @@ jobs:
             }
           }
 
-          class AdminScreen extends StatefulWidget {
+          class AdminScreen
+              extends StatefulWidget {
             const AdminScreen({super.key});
 
             @override
-            State<AdminScreen> createState() {
+            State<AdminScreen>
+                createState() {
               return _AdminScreenState();
             }
           }
@@ -1920,36 +2081,45 @@ jobs:
                   TextEditingController();
 
               final passwordController =
-                  TextEditingController(text: '1234');
+                  TextEditingController(
+                text: '1234',
+              );
 
               bool isAdmin = false;
 
-              final shouldSave =
+              final save =
                   await showDialog<bool>(
                 context: context,
-                builder: (dialogContext) {
+                builder:
+                    (dialogContext) {
                   return StatefulBuilder(
                     builder: (
                       context,
                       updateDialog,
                     ) {
                       return AlertDialog(
-                        title:
-                            const Text('إضافة مستخدم'),
-                        content: SingleChildScrollView(
+                        title: const Text(
+                          'إضافة مستخدم',
+                        ),
+                        content:
+                            SingleChildScrollView(
                           child: Column(
                             mainAxisSize:
-                                MainAxisSize.min,
+                                MainAxisSize
+                                    .min,
                             children: [
                               TextField(
                                 controller:
                                     nameController,
                                 decoration:
                                     const InputDecoration(
-                                  labelText: 'الاسم',
+                                  labelText:
+                                      'الاسم',
                                 ),
                               ),
-                              const SizedBox(height: 8),
+                              const SizedBox(
+                                height: 8,
+                              ),
                               TextField(
                                 controller:
                                     usernameController,
@@ -1959,7 +2129,9 @@ jobs:
                                       'اسم المستخدم',
                                 ),
                               ),
-                              const SizedBox(height: 8),
+                              const SizedBox(
+                                height: 8,
+                              ),
                               TextField(
                                 controller:
                                     passwordController,
@@ -1970,14 +2142,20 @@ jobs:
                                 ),
                               ),
                               SwitchListTile(
-                                title: const Text(
+                                title:
+                                    const Text(
                                   'مستخدم رئيسي',
                                 ),
-                                value: isAdmin,
-                                onChanged: (value) {
-                                  updateDialog(() {
-                                    isAdmin = value;
-                                  });
+                                value:
+                                    isAdmin,
+                                onChanged:
+                                    (value) {
+                                  updateDialog(
+                                    () {
+                                      isAdmin =
+                                          value;
+                                    },
+                                  );
                                 },
                               ),
                             ],
@@ -1986,19 +2164,23 @@ jobs:
                         actions: [
                           TextButton(
                             onPressed: () {
-                              Navigator.of(dialogContext)
-                                  .pop(false);
+                              Navigator.of(
+                                dialogContext,
+                              ).pop(false);
                             },
-                            child:
-                                const Text('إلغاء'),
+                            child: const Text(
+                              'إلغاء',
+                            ),
                           ),
                           FilledButton(
                             onPressed: () {
-                              Navigator.of(dialogContext)
-                                  .pop(true);
+                              Navigator.of(
+                                dialogContext,
+                              ).pop(true);
                             },
-                            child:
-                                const Text('إضافة'),
+                            child: const Text(
+                              'إضافة',
+                            ),
                           ),
                         ],
                       );
@@ -2007,21 +2189,28 @@ jobs:
                 },
               );
 
-              if (shouldSave == true) {
+              if (save == true) {
                 final username =
-                    usernameController.text.trim();
+                    usernameController.text
+                        .trim();
 
-                final duplicate = AppStore.users.any(
+                final duplicate =
+                    AppStore.users.any(
                   (user) =>
-                      user.username == username,
+                      user.username ==
+                      username,
                 );
 
-                if (nameController.text.trim().isEmpty ||
+                if (nameController.text
+                        .trim()
+                        .isEmpty ||
                     username.isEmpty ||
-                    passwordController.text.isEmpty) {
+                    passwordController
+                        .text.isEmpty) {
                   if (mounted) {
-                    ScaffoldMessenger.of(context)
-                        .showSnackBar(
+                    ScaffoldMessenger.of(
+                      context,
+                    ).showSnackBar(
                       const SnackBar(
                         content: Text(
                           'أكمل جميع بيانات المستخدم',
@@ -2031,8 +2220,9 @@ jobs:
                   }
                 } else if (duplicate) {
                   if (mounted) {
-                    ScaffoldMessenger.of(context)
-                        .showSnackBar(
+                    ScaffoldMessenger.of(
+                      context,
+                    ).showSnackBar(
                       const SnackBar(
                         content: Text(
                           'اسم المستخدم موجود مسبقًا',
@@ -2045,10 +2235,12 @@ jobs:
                     AppStore.users.add(
                       AppUser(
                         name:
-                            nameController.text.trim(),
+                            nameController.text
+                                .trim(),
                         username: username,
                         password:
-                            passwordController.text,
+                            passwordController
+                                .text,
                         isAdmin: isAdmin,
                       ),
                     );
@@ -2061,6 +2253,169 @@ jobs:
               passwordController.dispose();
             }
 
+            Future<void>
+                editApplicationSettings() async {
+              final scanController =
+                  TextEditingController(
+                text: AppStore
+                    .scanButtonName,
+              );
+
+              final inventoryController =
+                  TextEditingController(
+                text: AppStore
+                    .inventoryButtonName,
+              );
+
+              final reportsController =
+                  TextEditingController(
+                text: AppStore
+                    .reportsButtonName,
+              );
+
+              final daysController =
+                  TextEditingController(
+                text: AppStore
+                    .nearExpiryDays
+                    .toString(),
+              );
+
+              final save =
+                  await showDialog<bool>(
+                context: context,
+                builder:
+                    (dialogContext) {
+                  return AlertDialog(
+                    title: const Text(
+                      'إعدادات الواجهة',
+                    ),
+                    content:
+                        SingleChildScrollView(
+                      child: Column(
+                        mainAxisSize:
+                            MainAxisSize.min,
+                        children: [
+                          TextField(
+                            controller:
+                                scanController,
+                            decoration:
+                                const InputDecoration(
+                              labelText:
+                                  'اسم زر المسح',
+                            ),
+                          ),
+                          const SizedBox(
+                            height: 8,
+                          ),
+                          TextField(
+                            controller:
+                                inventoryController,
+                            decoration:
+                                const InputDecoration(
+                              labelText:
+                                  'اسم زر المخزون',
+                            ),
+                          ),
+                          const SizedBox(
+                            height: 8,
+                          ),
+                          TextField(
+                            controller:
+                                reportsController,
+                            decoration:
+                                const InputDecoration(
+                              labelText:
+                                  'اسم زر التقارير',
+                            ),
+                          ),
+                          const SizedBox(
+                            height: 8,
+                          ),
+                          TextField(
+                            controller:
+                                daysController,
+                            keyboardType:
+                                TextInputType
+                                    .number,
+                            decoration:
+                                const InputDecoration(
+                              labelText:
+                                  'أيام قرب الانتهاء',
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    actions: [
+                      TextButton(
+                        onPressed: () {
+                          Navigator.of(
+                            dialogContext,
+                          ).pop(false);
+                        },
+                        child:
+                            const Text('إلغاء'),
+                      ),
+                      FilledButton(
+                        onPressed: () {
+                          Navigator.of(
+                            dialogContext,
+                          ).pop(true);
+                        },
+                        child:
+                            const Text('حفظ'),
+                      ),
+                    ],
+                  );
+                },
+              );
+
+              if (save == true) {
+                final days = int.tryParse(
+                      daysController.text,
+                    ) ??
+                    30;
+
+                setState(() {
+                  if (scanController.text
+                      .trim()
+                      .isNotEmpty) {
+                    AppStore.scanButtonName =
+                        scanController.text
+                            .trim();
+                  }
+
+                  if (inventoryController
+                      .text
+                      .trim()
+                      .isNotEmpty) {
+                    AppStore
+                            .inventoryButtonName =
+                        inventoryController
+                            .text
+                            .trim();
+                  }
+
+                  if (reportsController.text
+                      .trim()
+                      .isNotEmpty) {
+                    AppStore
+                            .reportsButtonName =
+                        reportsController.text
+                            .trim();
+                  }
+
+                  AppStore.nearExpiryDays =
+                      days < 1 ? 1 : days;
+                });
+              }
+
+              scanController.dispose();
+              inventoryController.dispose();
+              reportsController.dispose();
+              daysController.dispose();
+            }
+
             @override
             Widget build(BuildContext context) {
               return Scaffold(
@@ -2068,50 +2423,76 @@ jobs:
                   title: const Text(
                     'لوحة المستخدم الرئيسي',
                   ),
+                  actions: [
+                    IconButton(
+                      tooltip:
+                          'إعدادات الواجهة',
+                      onPressed:
+                          editApplicationSettings,
+                      icon: const Icon(
+                        Icons.tune,
+                      ),
+                    ),
+                  ],
                 ),
                 floatingActionButton:
-                    FloatingActionButton.extended(
+                    FloatingActionButton
+                        .extended(
                   onPressed: addUser,
-                  icon:
-                      const Icon(Icons.person_add_alt_1),
-                  label:
-                      const Text('إضافة مستخدم'),
+                  icon: const Icon(
+                    Icons.person_add_alt_1,
+                  ),
+                  label: const Text(
+                    'إضافة مستخدم',
+                  ),
                 ),
                 body: ListView.separated(
-                  padding: const EdgeInsets.all(12),
-                  itemCount: AppStore.users.length,
+                  padding:
+                      const EdgeInsets.all(12),
+                  itemCount:
+                      AppStore.users.length,
                   separatorBuilder: (_, __) {
-                    return const SizedBox(height: 8);
+                    return const SizedBox(
+                      height: 8,
+                    );
                   },
                   itemBuilder: (_, index) {
                     final user =
                         AppStore.users[index];
 
-                    final currentUser =
-                        user == AppStore.currentUser;
+                    final current =
+                        user ==
+                            AppStore
+                                .currentUser;
 
                     return Card(
                       child: ExpansionTile(
                         leading: Icon(
                           user.isAdmin
-                              ? Icons.admin_panel_settings
-                              : Icons.person_outline,
+                              ? Icons
+                                  .admin_panel_settings
+                              : Icons
+                                  .person_outline,
                         ),
-                        title: Text(user.name),
+                        title:
+                            Text(user.name),
                         subtitle: Text(
                           '${user.username} • '
                           '${user.isAdmin ? 'رئيسي' : 'عادي'}'
-                          '${currentUser ? ' • الحساب الحالي' : ''}',
+                          '${current ? ' • الحساب الحالي' : ''}',
                         ),
                         trailing: Switch(
-                          value: user.isActive,
-                          onChanged: currentUser
+                          value:
+                              user.isActive,
+                          onChanged: current
                               ? null
                               : (value) {
-                                  setState(() {
-                                    user.isActive =
-                                        value;
-                                  });
+                                  setState(
+                                    () {
+                                      user.isActive =
+                                          value;
+                                    },
+                                  );
                                 },
                         ),
                         children: [
@@ -2119,10 +2500,12 @@ jobs:
                             title: const Text(
                               'السماح بمسح الباركود',
                             ),
-                            value: user.canScan,
+                            value:
+                                user.canScan,
                             onChanged: (value) {
                               setState(() {
-                                user.canScan = value;
+                                user.canScan =
+                                    value;
                               });
                             },
                           ),
@@ -2130,8 +2513,8 @@ jobs:
                             title: const Text(
                               'السماح بتسجيل الاستخدام',
                             ),
-                            value:
-                                user.canUseMaterials,
+                            value: user
+                                .canUseMaterials,
                             onChanged: (value) {
                               setState(() {
                                 user.canUseMaterials =
@@ -2143,8 +2526,8 @@ jobs:
                             title: const Text(
                               'عرض التقارير',
                             ),
-                            value:
-                                user.canViewReports,
+                            value: user
+                                .canViewReports,
                             onChanged: (value) {
                               setState(() {
                                 user.canViewReports =
@@ -2162,8 +2545,8 @@ jobs:
           }
           DART
 
-      - name: Configure Android
-        working-directory: smartchem_v2
+      - name: Configure Android application
+        working-directory: smartchem_v203
         shell: bash
         run: |
           python3 - <<'PY'
@@ -2175,24 +2558,32 @@ jobs:
 
           text = manifest.read_text(encoding="utf-8")
 
-          permission = (
+          camera_permission = (
               '<uses-permission '
               'android:name="android.permission.CAMERA" />'
           )
 
-          if permission not in text:
+          camera_feature = (
+              '<uses-feature '
+              'android:name="android.hardware.camera.any" '
+              'android:required="false" />'
+          )
+
+          if camera_permission not in text:
               position = text.find(">")
 
               text = (
                   text[:position + 1]
                   + "\n    "
-                  + permission
+                  + camera_permission
+                  + "\n    "
+                  + camera_feature
                   + text[position + 1:]
               )
 
           text = text.replace(
-              'android:label="smartchem_track_v2"',
-              'android:label="SmartChem Track v2.0.2"'
+              'android:label="smartchem_track_v203"',
+              'android:label="SmartChem Track v2.0.3"'
           )
 
           manifest.write_text(
@@ -2211,9 +2602,9 @@ jobs:
 
               content = content.replace(
                   'applicationId = '
-                  '"om.smartchem.smartchem_track_v2"',
+                  '"om.smartchem.smartchem_track_v203"',
                   'applicationId = '
-                  '"om.smartchem.track.v2"'
+                  '"om.smartchem.track.v203"'
               )
 
               content = content.replace(
@@ -2227,24 +2618,29 @@ jobs:
               )
           PY
 
+      - name: Show generated Android manifest
+        working-directory: smartchem_v203
+        run: |
+          cat android/app/src/main/AndroidManifest.xml
+
       - name: Build release APK
-        working-directory: smartchem_v2
+        working-directory: smartchem_v203
         run: |
           flutter build apk \
             --release \
-            --build-name=2.0.2 \
-            --build-number=4
+            --build-name=2.0.3 \
+            --build-number=5
 
-      - name: Rename APK
+      - name: Copy APK
         run: |
           cp \
-            smartchem_v2/build/app/outputs/flutter-apk/app-release.apk \
-            SmartChemTrack-v2.0.2.apk
+            smartchem_v203/build/app/outputs/flutter-apk/app-release.apk \
+            SmartChemTrack-v2.0.3.apk
 
-      - name: Upload APK
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: SmartChemTrack-v2.0.2-APK
-          path: SmartChemTrack-v2.0.2.apk
+          name: SmartChemTrack-v2.0.3-APK
+          path: SmartChemTrack-v2.0.3.apk
           retention-days: 30
           if-no-files-found: error
