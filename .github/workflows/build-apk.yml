@@ -1,4 +1,4 @@
-name: Build SmartChem Track v2
+name: Build SmartChem Track v2 Fixed
 
 on:
   push:
@@ -15,7 +15,7 @@ jobs:
     timeout-minutes: 35
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Install Flutter
@@ -31,13 +31,13 @@ jobs:
             --org om.smartchem \
             --project-name smartchem_track_v2
 
-      - name: Add packages
+      - name: Add required packages
         working-directory: smartchem_v2
         run: |
           flutter pub add mobile_scanner
           flutter pub add intl
 
-      - name: Write SmartChem v2 code
+      - name: Write SmartChem Track v2 application
         working-directory: smartchem_v2
         shell: bash
         run: |
@@ -57,7 +57,7 @@ jobs:
             Widget build(BuildContext context) {
               return MaterialApp(
                 debugShowCheckedModeBanner: false,
-                title: 'SmartChem Track v2',
+                title: 'SmartChem Track v2.0.1',
                 builder: (context, child) {
                   return Directionality(
                     textDirection: TextDirection.rtl,
@@ -74,6 +74,10 @@ jobs:
                     border: OutlineInputBorder(),
                     filled: true,
                   ),
+                  cardTheme: const CardThemeData(
+                    elevation: 1,
+                    margin: EdgeInsets.zero,
+                  ),
                 ),
                 home: const LoginScreen(),
               );
@@ -89,6 +93,7 @@ jobs:
               this.active = true,
               this.canScan = true,
               this.canReports = true,
+              this.canUseMaterials = true,
             });
 
             String name;
@@ -98,6 +103,7 @@ jobs:
             bool active;
             bool canScan;
             bool canReports;
+            bool canUseMaterials;
           }
 
           enum ItemStatus {
@@ -105,6 +111,7 @@ jobs:
             nearExpiry,
             expired,
             unapproved,
+            empty,
           }
 
           class LabItem {
@@ -136,19 +143,26 @@ jobs:
             String department;
             String employee;
             double totalQuantity;
-            double usedQuantity = 0;
+            double usedQuantity = 0.0;
             DateTime? openedAt;
             bool approved;
 
             double get remaining {
               final result = totalQuantity - usedQuantity;
-              return result < 0 ? 0 : result;
+              return result < 0 ? 0.0 : result;
             }
 
             ItemStatus status() {
-              if (!approved) return ItemStatus.unapproved;
+              if (remaining <= 0) {
+                return ItemStatus.empty;
+              }
+
+              if (!approved) {
+                return ItemStatus.unapproved;
+              }
 
               final now = DateTime.now();
+
               final today = DateTime(
                 now.year,
                 now.month,
@@ -177,12 +191,14 @@ jobs:
             UsageRecord({
               required this.material,
               required this.employee,
+              required this.device,
               required this.quantity,
               required this.dateTime,
             });
 
             final String material;
             final String employee;
+            final String device;
             final double quantity;
             final DateTime dateTime;
           }
@@ -219,11 +235,8 @@ jobs:
           }
 
           class _LoginScreenState extends State<LoginScreen> {
-            final username =
-                TextEditingController(text: 'admin');
-
-            final password =
-                TextEditingController(text: '1234');
+            final username = TextEditingController(text: 'admin');
+            final password = TextEditingController(text: '1234');
 
             String error = '';
 
@@ -271,70 +284,87 @@ jobs:
                   child: Center(
                     child: SingleChildScrollView(
                       padding: const EdgeInsets.all(24),
-                      child: Card(
-                        child: Padding(
-                          padding: const EdgeInsets.all(24),
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            crossAxisAlignment:
-                                CrossAxisAlignment.stretch,
-                            children: [
-                              const Icon(
-                                Icons.science_outlined,
-                                size: 75,
-                              ),
-                              const SizedBox(height: 12),
-                              const Text(
-                                'SmartChem Track v2',
-                                textAlign: TextAlign.center,
-                                style: TextStyle(
-                                  fontSize: 27,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                              const SizedBox(height: 24),
-                              TextField(
-                                controller: username,
-                                decoration:
-                                    const InputDecoration(
-                                  labelText: 'اسم المستخدم',
-                                ),
-                              ),
-                              const SizedBox(height: 12),
-                              TextField(
-                                controller: password,
-                                obscureText: true,
-                                decoration:
-                                    const InputDecoration(
-                                  labelText: 'كلمة المرور',
-                                ),
-                              ),
-                              if (error.isNotEmpty) ...[
-                                const SizedBox(height: 10),
-                                Text(
-                                  error,
-                                  style: const TextStyle(
-                                    color: Colors.red,
+                      child: ConstrainedBox(
+                        constraints: const BoxConstraints(
+                          maxWidth: 520,
+                        ),
+                        child: Card(
+                          child: Padding(
+                            padding: const EdgeInsets.all(24),
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              crossAxisAlignment:
+                                  CrossAxisAlignment.stretch,
+                              children: [
+                                const CircleAvatar(
+                                  radius: 43,
+                                  child: Icon(
+                                    Icons.science_outlined,
+                                    size: 48,
                                   ),
+                                ),
+                                const SizedBox(height: 14),
+                                const Text(
+                                  'SmartChem Track',
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(
+                                    fontSize: 27,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                                const Text(
+                                  'الإصدار 2.0.1',
+                                  textAlign: TextAlign.center,
+                                ),
+                                const SizedBox(height: 24),
+                                TextField(
+                                  controller: username,
+                                  decoration:
+                                      const InputDecoration(
+                                    labelText: 'اسم المستخدم',
+                                    prefixIcon:
+                                        Icon(Icons.person_outline),
+                                  ),
+                                ),
+                                const SizedBox(height: 12),
+                                TextField(
+                                  controller: password,
+                                  obscureText: true,
+                                  decoration:
+                                      const InputDecoration(
+                                    labelText: 'كلمة المرور',
+                                    prefixIcon:
+                                        Icon(Icons.lock_outline),
+                                  ),
+                                ),
+                                if (error.isNotEmpty) ...[
+                                  const SizedBox(height: 10),
+                                  Text(
+                                    error,
+                                    style: const TextStyle(
+                                      color: Colors.red,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ],
+                                const SizedBox(height: 14),
+                                FilledButton(
+                                  onPressed: login,
+                                  child: const Padding(
+                                    padding: EdgeInsets.symmetric(
+                                      vertical: 14,
+                                    ),
+                                    child: Text('دخول'),
+                                  ),
+                                ),
+                                const SizedBox(height: 12),
+                                const Text(
+                                  'الرئيسي: admin / 1234\n'
+                                  'الموظف: staff / 1234',
+                                  textAlign: TextAlign.center,
                                 ),
                               ],
-                              const SizedBox(height: 14),
-                              FilledButton(
-                                onPressed: login,
-                                child: const Padding(
-                                  padding: EdgeInsets.symmetric(
-                                    vertical: 14,
-                                  ),
-                                  child: Text('دخول'),
-                                ),
-                              ),
-                              const SizedBox(height: 10),
-                              const Text(
-                                'الرئيسي: admin / 1234\n'
-                                'الموظف: staff / 1234',
-                                textAlign: TextAlign.center,
-                              ),
-                            ],
+                            ),
                           ),
                         ),
                       ),
@@ -355,6 +385,8 @@ jobs:
           }
 
           class _HomeScreenState extends State<HomeScreen> {
+            bool staffMode = false;
+
             int count(ItemStatus status) {
               return AppData.materials
                   .where((item) => item.status() == status)
@@ -367,7 +399,9 @@ jobs:
                 MaterialPageRoute(builder: (_) => screen),
               );
 
-              setState(() {});
+              if (mounted) {
+                setState(() {});
+              }
             }
 
             void logout() {
@@ -387,11 +421,36 @@ jobs:
 
               return Scaffold(
                 appBar: AppBar(
-                  title: const Text(
-                    'SmartChem Track v2',
-                  ),
+                  title: const Text('SmartChem Track v2.0.1'),
                   actions: [
+                    if (user.admin)
+                      IconButton(
+                        tooltip: staffMode
+                            ? 'الرجوع إلى وضع الإدارة'
+                            : 'الدخول كموظف عادي',
+                        onPressed: () {
+                          setState(() {
+                            staffMode = !staffMode;
+                          });
+
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text(
+                                staffMode
+                                    ? 'تم الدخول إلى واجهة الموظف العادي'
+                                    : 'تم الرجوع إلى واجهة الإدارة',
+                              ),
+                            ),
+                          );
+                        },
+                        icon: Icon(
+                          staffMode
+                              ? Icons.admin_panel_settings
+                              : Icons.person_outline,
+                        ),
+                      ),
                     IconButton(
+                      tooltip: 'تسجيل الخروج',
                       onPressed: logout,
                       icon: const Icon(Icons.logout),
                     ),
@@ -405,13 +464,17 @@ jobs:
                       style:
                           Theme.of(context).textTheme.titleLarge,
                     ),
+                    if (staffMode)
+                      const Text(
+                        'أنت الآن تستخدم واجهة الموظف العادي',
+                      ),
                     const SizedBox(height: 14),
                     GridView.count(
                       crossAxisCount: 2,
                       shrinkWrap: true,
                       physics:
                           const NeverScrollableScrollPhysics(),
-                      childAspectRatio: 1.55,
+                      childAspectRatio: 1.45,
                       mainAxisSpacing: 10,
                       crossAxisSpacing: 10,
                       children: [
@@ -422,8 +485,7 @@ jobs:
                         ),
                         StatusCard(
                           title: 'قريب الانتهاء',
-                          count:
-                              count(ItemStatus.nearExpiry),
+                          count: count(ItemStatus.nearExpiry),
                           color: Colors.amber,
                         ),
                         StatusCard(
@@ -433,8 +495,7 @@ jobs:
                         ),
                         StatusCard(
                           title: 'غير معتمد',
-                          count:
-                              count(ItemStatus.unapproved),
+                          count: count(ItemStatus.unapproved),
                           color: Colors.orange,
                         ),
                       ],
@@ -464,7 +525,12 @@ jobs:
                       icon: const Icon(
                         Icons.inventory_2_outlined,
                       ),
-                      label: const Text('المخزون'),
+                      label: const Padding(
+                        padding: EdgeInsets.symmetric(
+                          vertical: 12,
+                        ),
+                        child: Text('المخزون'),
+                      ),
                     ),
                     if (user.canReports) ...[
                       const SizedBox(height: 10),
@@ -475,39 +541,32 @@ jobs:
                         icon: const Icon(
                           Icons.assessment_outlined,
                         ),
-                        label: const Text(
-                          'التقارير اليومية والأسبوعية والشهرية',
+                        label: const Padding(
+                          padding: EdgeInsets.symmetric(
+                            vertical: 12,
+                          ),
+                          child: Text(
+                            'التقارير اليومية والأسبوعية والشهرية',
+                          ),
                         ),
                       ),
                     ],
-                    if (user.admin) ...[
+                    if (user.admin && !staffMode) ...[
                       const SizedBox(height: 10),
-                      OutlinedButton.icon(
+                      FilledButton.tonalIcon(
                         onPressed: () {
                           open(const AdminScreen());
                         },
                         icon: const Icon(
                           Icons.admin_panel_settings,
                         ),
-                        label: const Text(
-                          'لوحة المستخدم الرئيسي',
-                        ),
-                      ),
-                      const SizedBox(height: 10),
-                      FilledButton.tonalIcon(
-                        onPressed: () {
-                          ScaffoldMessenger.of(context)
-                              .showSnackBar(
-                            const SnackBar(
-                              content: Text(
-                                'أنت الآن داخل واجهة الموظف العادي',
-                              ),
-                            ),
-                          );
-                        },
-                        icon: const Icon(Icons.person_outline),
-                        label: const Text(
-                          'الدخول كمستخدم عادي',
+                        label: const Padding(
+                          padding: EdgeInsets.symmetric(
+                            vertical: 12,
+                          ),
+                          child: Text(
+                            'لوحة المستخدم الرئيسي',
+                          ),
                         ),
                       ),
                     ],
@@ -553,7 +612,10 @@ jobs:
                           fontWeight: FontWeight.bold,
                         ),
                       ),
-                      Text(title),
+                      Text(
+                        title,
+                        textAlign: TextAlign.center,
+                      ),
                     ],
                   ),
                 ),
@@ -628,7 +690,8 @@ jobs:
 
             if (raw.contains('(01)') ||
                 raw.contains('(10)') ||
-                raw.contains('(17)')) {
+                raw.contains('(17)') ||
+                raw.contains('(240)')) {
               final expiryCode =
                   find(r'\(17\)(\d{6})');
 
@@ -695,6 +758,8 @@ jobs:
             late final MobileScannerController controller;
 
             bool processing = false;
+            bool cameraStarting = false;
+            bool cameraStarted = false;
             String errorMessage = '';
 
             @override
@@ -717,8 +782,16 @@ jobs:
             }
 
             Future<void> startCamera() async {
+              if (cameraStarting || cameraStarted) {
+                return;
+              }
+
+              cameraStarting = true;
+
               try {
                 await controller.start();
+
+                cameraStarted = true;
 
                 if (mounted) {
                   setState(() {
@@ -726,14 +799,33 @@ jobs:
                   });
                 }
               } catch (error) {
+                cameraStarted = false;
+
                 if (mounted) {
                   setState(() {
                     errorMessage =
-                        'تعذر تشغيل الكاميرا. '
-                        'تأكد من منح صلاحية الكاميرا '
-                        'ثم اضغط إعادة المحاولة.';
+                        'تعذر تشغيل الكاميرا.\n'
+                        'افتح إعدادات الهاتف ثم اسمح للتطبيق '
+                        'باستخدام الكاميرا، وبعدها اضغط '
+                        'إعادة المحاولة.';
                   });
                 }
+              } finally {
+                cameraStarting = false;
+              }
+            }
+
+            Future<void> stopCamera() async {
+              if (!cameraStarted) {
+                return;
+              }
+
+              try {
+                await controller.stop();
+              } catch (_) {
+                // تجاهل خطأ الإيقاف.
+              } finally {
+                cameraStarted = false;
               }
             }
 
@@ -742,8 +834,9 @@ jobs:
               AppLifecycleState state,
             ) {
               if (state == AppLifecycleState.paused ||
-                  state == AppLifecycleState.inactive) {
-                controller.stop();
+                  state == AppLifecycleState.inactive ||
+                  state == AppLifecycleState.detached) {
+                stopCamera();
               }
 
               if (state == AppLifecycleState.resumed) {
@@ -758,11 +851,13 @@ jobs:
 
               processing = true;
 
-              await controller.stop();
+              await stopCamera();
 
               final parsed = parseGs1(raw);
 
-              if (!mounted) return;
+              if (!mounted) {
+                return;
+              }
 
               await Navigator.push(
                 context,
@@ -797,6 +892,10 @@ jobs:
                   content: TextField(
                     controller: text,
                     maxLines: 4,
+                    decoration:
+                        const InputDecoration(
+                      labelText: 'الكود',
+                    ),
                   ),
                   actions: [
                     TextButton(
@@ -825,6 +924,23 @@ jobs:
               }
             }
 
+            Future<void> toggleTorch() async {
+              try {
+                await controller.toggleTorch();
+              } catch (_) {
+                if (mounted) {
+                  ScaffoldMessenger.of(context)
+                      .showSnackBar(
+                    const SnackBar(
+                      content: Text(
+                        'تعذر تشغيل إضاءة الكاميرا',
+                      ),
+                    ),
+                  );
+                }
+              }
+            }
+
             @override
             void dispose() {
               WidgetsBinding.instance.removeObserver(this);
@@ -839,11 +955,13 @@ jobs:
                   title: const Text('مسح العبوة'),
                   actions: [
                     IconButton(
+                      tooltip: 'إدخال يدوي',
                       onPressed: manualEntry,
                       icon: const Icon(Icons.keyboard),
                     ),
                     IconButton(
-                      onPressed: controller.toggleTorch,
+                      tooltip: 'الإضاءة',
+                      onPressed: toggleTorch,
                       icon: const Icon(
                         Icons.flashlight_on_outlined,
                       ),
@@ -863,7 +981,8 @@ jobs:
                         final value =
                             capture.barcodes.first.rawValue;
 
-                        if (value != null) {
+                        if (value != null &&
+                            value.trim().isNotEmpty) {
                           process(value);
                         }
                       },
@@ -907,6 +1026,13 @@ jobs:
                                   onPressed: startCamera,
                                   child: const Text(
                                     'إعادة المحاولة',
+                                  ),
+                                ),
+                                const SizedBox(height: 8),
+                                OutlinedButton(
+                                  onPressed: manualEntry,
+                                  child: const Text(
+                                    'الإدخال اليدوي',
                                   ),
                                 ),
                               ],
@@ -955,7 +1081,9 @@ jobs:
             final serial = TextEditingController();
             final device = TextEditingController();
             final department =
-                TextEditingController(text: 'قسم الكيمياء');
+                TextEditingController(
+                  text: 'قسم الكيمياء',
+                );
 
             final quantity =
                 TextEditingController(text: '1');
@@ -983,7 +1111,7 @@ jobs:
 
             void save() {
               final qty =
-                  double.tryParse(quantity.text) ?? 0;
+                  double.tryParse(quantity.text) ?? 0.0;
 
               if (name.text.trim().isEmpty ||
                   device.text.trim().isEmpty ||
@@ -1012,7 +1140,8 @@ jobs:
                   serial: serial.text.trim(),
                   expiry: expiry,
                   device: device.text.trim(),
-                  department: department.text.trim(),
+                  department:
+                      department.text.trim(),
                   employee:
                       AppData.currentUser?.name ?? '',
                   totalQuantity: qty,
@@ -1051,7 +1180,7 @@ jobs:
                     ),
                     const SizedBox(height: 12),
                     DropdownButtonFormField<String>(
-                      value: type,
+                      initialValue: type,
                       decoration:
                           const InputDecoration(
                         labelText: 'نوع المادة',
@@ -1071,8 +1200,12 @@ jobs:
                         ),
                       ],
                       onChanged: (value) {
+                        if (value == null) {
+                          return;
+                        }
+
                         setState(() {
-                          type = value!;
+                          type = value;
                         });
                       },
                     ),
@@ -1104,42 +1237,50 @@ jobs:
                     TextField(
                       controller: quantity,
                       keyboardType:
-                          TextInputType.number,
+                          const TextInputType.numberWithOptions(
+                        decimal: true,
+                      ),
                       decoration:
                           const InputDecoration(
                         labelText: 'الكمية الأصلية',
                       ),
                     ),
                     const SizedBox(height: 10),
-                    ListTile(
-                      contentPadding: EdgeInsets.zero,
-                      title:
-                          const Text('تاريخ الانتهاء'),
-                      subtitle: Text(
-                        DateFormat('dd/MM/yyyy')
-                            .format(expiry),
-                      ),
-                      trailing:
-                          const Icon(Icons.calendar_month),
-                      onTap: () async {
-                        final selected =
-                            await showDatePicker(
-                          context: context,
-                          initialDate: expiry,
-                          firstDate: DateTime(2020),
-                          lastDate: DateTime(2040),
-                        );
+                    Card(
+                      child: ListTile(
+                        title:
+                            const Text('تاريخ الانتهاء'),
+                        subtitle: Text(
+                          DateFormat('dd/MM/yyyy')
+                              .format(expiry),
+                        ),
+                        trailing:
+                            const Icon(Icons.calendar_month),
+                        onTap: () async {
+                          final selected =
+                              await showDatePicker(
+                            context: context,
+                            initialDate: expiry,
+                            firstDate: DateTime(2020),
+                            lastDate: DateTime(2045),
+                          );
 
-                        if (selected != null) {
-                          setState(() {
-                            expiry = selected;
-                          });
-                        }
-                      },
+                          if (selected != null) {
+                            setState(() {
+                              expiry = selected;
+                            });
+                          }
+                        },
+                      ),
                     ),
                     SwitchListTile(
                       title: const Text(
                         'معتمد للاستخدام',
+                      ),
+                      subtitle: Text(
+                        AppData.currentUser?.admin == true
+                            ? 'يمكن للمستخدم الرئيسي اعتماد المادة'
+                            : 'الاعتماد متاح للمستخدم الرئيسي فقط',
                       ),
                       value: approved,
                       onChanged:
@@ -1202,6 +1343,8 @@ jobs:
                   return Colors.red;
                 case ItemStatus.unapproved:
                   return Colors.orange;
+                case ItemStatus.empty:
+                  return Colors.grey;
               }
             }
 
@@ -1215,14 +1358,30 @@ jobs:
                   return 'منتهي';
                 case ItemStatus.unapproved:
                   return 'غير معتمد';
+                case ItemStatus.empty:
+                  return 'نفدت الكمية';
               }
             }
 
             Future<void> useItem(LabItem item) async {
+              final user = AppData.currentUser!;
               final status = item.status();
 
+              if (!user.canUseMaterials) {
+                ScaffoldMessenger.of(context)
+                    .showSnackBar(
+                  const SnackBar(
+                    content: Text(
+                      'ليس لديك صلاحية تسجيل الاستخدام',
+                    ),
+                  ),
+                );
+                return;
+              }
+
               if (status == ItemStatus.expired ||
-                  status == ItemStatus.unapproved) {
+                  status == ItemStatus.unapproved ||
+                  status == ItemStatus.empty) {
                 ScaffoldMessenger.of(context)
                     .showSnackBar(
                   SnackBar(
@@ -1230,15 +1389,50 @@ jobs:
                         statusColor(status),
                     content: Text(
                       status == ItemStatus.expired
-                          ? 'لا يمكن الاستخدام: '
-                              'المادة منتهية'
-                          : 'لا يمكن الاستخدام: '
-                              'المادة غير معتمدة',
+                          ? 'لا يمكن الاستخدام: المادة منتهية'
+                          : status == ItemStatus.unapproved
+                              ? 'لا يمكن الاستخدام: المادة غير معتمدة'
+                              : 'لا يمكن الاستخدام: نفدت الكمية',
                     ),
                   ),
                 );
 
                 return;
+              }
+
+              if (status == ItemStatus.nearExpiry) {
+                final continueUse =
+                    await showDialog<bool>(
+                  context: context,
+                  builder: (_) => AlertDialog(
+                    title: const Text(
+                      'تنبيه قرب انتهاء الصلاحية',
+                    ),
+                    content: Text(
+                      'المادة ${item.name} قريبة الانتهاء.\n'
+                      'تاريخ الانتهاء: '
+                      '${DateFormat('dd/MM/yyyy').format(item.expiry)}',
+                    ),
+                    actions: [
+                      TextButton(
+                        onPressed: () {
+                          Navigator.pop(context, false);
+                        },
+                        child: const Text('إلغاء'),
+                      ),
+                      FilledButton(
+                        onPressed: () {
+                          Navigator.pop(context, true);
+                        },
+                        child: const Text('متابعة'),
+                      ),
+                    ],
+                  ),
+                );
+
+                if (continueUse != true) {
+                  return;
+                }
               }
 
               final controller =
@@ -1254,11 +1448,12 @@ jobs:
                   content: TextField(
                     controller: controller,
                     keyboardType:
-                        TextInputType.number,
+                        const TextInputType.numberWithOptions(
+                      decimal: true,
+                    ),
                     decoration: InputDecoration(
                       labelText:
-                          'الكمية المستخدمة '
-                          '- المتبقي ${item.remaining}',
+                          'الكمية المستخدمة - المتبقي ${item.remaining}',
                     ),
                   ),
                   actions: [
@@ -1299,13 +1494,21 @@ jobs:
                   0,
                   UsageRecord(
                     material: item.name,
-                    employee:
-                        AppData.currentUser?.name ?? '',
+                    employee: user.name,
+                    device: item.device,
                     quantity: used,
                     dateTime: DateTime.now(),
                   ),
                 );
               });
+
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text(
+                    'تم تسجيل الاستخدام بنجاح',
+                  ),
+                ),
+              );
             }
 
             @override
@@ -1349,15 +1552,13 @@ jobs:
                               ),
                               title: Text(item.name),
                               subtitle: Text(
-                                '${item.type} • '
-                                '${item.device}\n'
+                                '${item.type} • ${item.device}\n'
                                 'LOT: ${item.lot}\n'
                                 'الانتهاء: '
                                 '${DateFormat('dd/MM/yyyy').format(item.expiry)}\n'
-                                'المتبقي: '
-                                '${item.remaining}',
+                                'المتبقي: ${item.remaining}',
                               ),
-                              isThreeLine: true,
+                              isThreeLine: false,
                               trailing: Text(
                                 statusName(status),
                                 style: TextStyle(
@@ -1390,8 +1591,8 @@ jobs:
                     (record) =>
                         record.dateTime.isAfter(start),
                   )
-                  .fold(
-                    0,
+                  .fold<double>(
+                    0.0,
                     (sum, record) =>
                         sum + record.quantity,
                   );
@@ -1467,6 +1668,43 @@ jobs:
                       context,
                       'التقرير الشهري',
                       const Duration(days: 30),
+                    ),
+                    const SizedBox(height: 18),
+                    Text(
+                      'آخر عمليات الاستخدام',
+                      style:
+                          Theme.of(context).textTheme.titleLarge,
+                    ),
+                    const SizedBox(height: 8),
+                    if (AppData.usage.isEmpty)
+                      const Card(
+                        child: Padding(
+                          padding: EdgeInsets.all(16),
+                          child: Text(
+                            'لا توجد عمليات استخدام مسجلة',
+                          ),
+                        ),
+                      ),
+                    ...AppData.usage.take(20).map(
+                      (record) {
+                        return Padding(
+                          padding:
+                              const EdgeInsets.only(bottom: 8),
+                          child: Card(
+                            child: ListTile(
+                              title: Text(record.material),
+                              subtitle: Text(
+                                '${record.employee} • '
+                                '${record.device}\n'
+                                '${DateFormat('dd/MM/yyyy HH:mm').format(record.dateTime)}',
+                              ),
+                              trailing: Text(
+                                record.quantity.toString(),
+                              ),
+                            ),
+                          ),
+                        );
+                      },
                     ),
                   ],
                 ),
@@ -1576,18 +1814,38 @@ jobs:
 
               if (save == true &&
                   name.text.trim().isNotEmpty &&
-                  username.text.trim().isNotEmpty) {
-                setState(() {
-                  AppData.users.add(
-                    AppUser(
-                      name: name.text.trim(),
-                      username:
-                          username.text.trim(),
-                      password: password.text,
-                      admin: admin,
-                    ),
-                  );
-                });
+                  username.text.trim().isNotEmpty &&
+                  password.text.isNotEmpty) {
+                final duplicate = AppData.users.any(
+                  (user) =>
+                      user.username ==
+                      username.text.trim(),
+                );
+
+                if (duplicate) {
+                  if (mounted) {
+                    ScaffoldMessenger.of(context)
+                        .showSnackBar(
+                      const SnackBar(
+                        content: Text(
+                          'اسم المستخدم موجود مسبقًا',
+                        ),
+                      ),
+                    );
+                  }
+                } else {
+                  setState(() {
+                    AppData.users.add(
+                      AppUser(
+                        name: name.text.trim(),
+                        username:
+                            username.text.trim(),
+                        password: password.text,
+                        admin: admin,
+                      ),
+                    );
+                  });
+                }
               }
 
               name.dispose();
@@ -1623,30 +1881,31 @@ jobs:
                     final user =
                         AppData.users[index];
 
+                    final current =
+                        user == AppData.currentUser;
+
                     return Card(
                       child: ExpansionTile(
                         leading: Icon(
                           user.admin
-                              ? Icons
-                                  .admin_panel_settings
+                              ? Icons.admin_panel_settings
                               : Icons.person_outline,
                         ),
                         title: Text(user.name),
                         subtitle: Text(
                           '${user.username} • '
-                          '${user.admin ? 'رئيسي' : 'عادي'}',
+                          '${user.admin ? 'رئيسي' : 'عادي'}'
+                          '${current ? ' • الحساب الحالي' : ''}',
                         ),
                         trailing: Switch(
                           value: user.active,
-                          onChanged:
-                              user == AppData.currentUser
-                                  ? null
-                                  : (value) {
-                                      setState(() {
-                                        user.active =
-                                            value;
-                                      });
-                                    },
+                          onChanged: current
+                              ? null
+                              : (value) {
+                                  setState(() {
+                                    user.active = value;
+                                  });
+                                },
                         ),
                         children: [
                           SwitchListTile(
@@ -1657,6 +1916,19 @@ jobs:
                             onChanged: (value) {
                               setState(() {
                                 user.canScan = value;
+                              });
+                            },
+                          ),
+                          SwitchListTile(
+                            title: const Text(
+                              'السماح بتسجيل الاستخدام',
+                            ),
+                            value:
+                                user.canUseMaterials,
+                            onChanged: (value) {
+                              setState(() {
+                                user.canUseMaterials =
+                                    value;
                               });
                             },
                           ),
@@ -1682,7 +1954,7 @@ jobs:
           }
           DART
 
-      - name: Configure Android v2
+      - name: Configure Android application
         working-directory: smartchem_v2
         run: |
           python3 - <<'PY'
@@ -1701,6 +1973,7 @@ jobs:
 
           if permission not in text:
               position = text.find(">")
+
               text = (
                   text[:position + 1]
                   + "\n    "
@@ -1739,34 +2012,32 @@ jobs:
                   "minSdk = 23"
               )
 
-              content = content.replace(
-                  "versionCode = flutter.versionCode",
-                  "versionCode = 2"
-              )
-
-              content = content.replace(
-                  "versionName = flutter.versionName",
-                  'versionName = "2.0.0"'
-              )
-
               gradle.write_text(
                   content,
                   encoding="utf-8"
               )
           PY
 
+      - name: Analyze application
+        working-directory: smartchem_v2
+        run: flutter analyze
+
       - name: Build SmartChem Track v2 APK
         working-directory: smartchem_v2
-        run: flutter build apk --release
+        run: |
+          flutter build apk \
+            --release \
+            --build-name=2.0.1 \
+            --build-number=3
 
       - name: Rename APK
         run: |
-          cp smartchem_v2/build/app/outputs/flutter-apk/app-release.apk SmartChemTrack-v2.apk
+          cp smartchem_v2/build/app/outputs/flutter-apk/app-release.apk SmartChemTrack-v2.0.1.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: SmartChemTrack-v2-APK
-          path: SmartChemTrack-v2.apk
+          name: SmartChemTrack-v2.0.1-APK
+          path: SmartChemTrack-v2.0.1.apk
           retention-days: 30
           if-no-files-found: error
