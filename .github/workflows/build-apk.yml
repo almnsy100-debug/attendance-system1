@@ -1,4 +1,4 @@
-name: Build SmartChem Track v3.1.0
+name: Build SmartChem Track v3.1.2 Fixed
 
 on:
   push:
@@ -18,6 +18,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install Flutter
         uses: subosito/flutter-action@v2
@@ -39,3561 +41,219 @@ jobs:
             --org om.smartchem \
             --project-name smartchem_track
 
-      - name: Write pubspec
+      - name: Recover complete SmartChem source
+        shell: bash
+        run: |
+          set -e
+
+          SOURCE_COMMIT="fb898ea38ba71732b150efaf50542d192aa67efa"
+
+          git show \
+            "${SOURCE_COMMIT}:.github/workflows/build-apk.yml" \
+            > /tmp/smartchem-v310-workflow.yml
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          source_path = Path(
+              "/tmp/smartchem-v310-workflow.yml"
+          )
+
+          source_lines = source_path.read_text(
+              encoding="utf-8"
+          ).splitlines()
+
+          def extract_block(
+              start_text: str,
+              end_marker: str,
+          ) -> list[str]:
+
+              collecting = False
+              output: list[str] = []
+
+              for line in source_lines:
+
+                  if not collecting and start_text in line:
+                      collecting = True
+                      continue
+
+                  if collecting and line.strip() == end_marker:
+                      break
+
+                  if collecting:
+                      if line.startswith("          "):
+                          line = line[10:]
+
+                      output.append(line)
+
+              if not output:
+                  raise SystemExit(
+                      f"Could not extract block: {start_text}"
+                  )
+
+              return output
+
+          pubspec_lines = extract_block(
+              "cat > pubspec.yaml <<'PUBSPEC'",
+              "PUBSPEC",
+          )
+
+          main_dart_lines = extract_block(
+              "cat > lib/main.dart <<'DART'",
+              "DART",
+          )
+
+          Path(
+              "smartchem_app/pubspec.yaml"
+          ).write_text(
+              "\n".join(pubspec_lines) + "\n",
+              encoding="utf-8",
+          )
+
+          Path(
+              "smartchem_app/lib/main.dart"
+          ).write_text(
+              "\n".join(main_dart_lines) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+          test -s smartchem_app/pubspec.yaml
+          test -s smartchem_app/lib/main.dart
+
+          grep -q \
+            "class SmartChemApp" \
+            smartchem_app/lib/main.dart
+
+          grep -q \
+            "class ScannerScreen" \
+            smartchem_app/lib/main.dart
+
+          grep -q \
+            "class RegisterMaterialScreen" \
+            smartchem_app/lib/main.dart
+
+          grep -q \
+            "class MaterialDetailsScreen" \
+            smartchem_app/lib/main.dart
+
+          grep -q \
+            "class InventoryScreen" \
+            smartchem_app/lib/main.dart
+
+          grep -q \
+            "class UsersScreen" \
+            smartchem_app/lib/main.dart
+
+          echo "pubspec.yaml lines:"
+          wc -l smartchem_app/pubspec.yaml
+
+          echo "main.dart lines:"
+          wc -l smartchem_app/lib/main.dart
+
+          echo "Complete SmartChem source recovered successfully"
+
+      - name: Apply source corrections
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          pubspec_path = Path(
+              "smartchem_app/pubspec.yaml"
+          )
+
+          main_path = Path(
+              "smartchem_app/lib/main.dart"
+          )
+
+          pubspec = pubspec_path.read_text(
+              encoding="utf-8"
+          )
+
+          main = main_path.read_text(
+              encoding="utf-8"
+          )
+
+          pubspec = pubspec.replace(
+              "version: 3.1.0+11",
+              "version: 3.1.2+13",
+          )
+
+          main = main.replace(
+              "الإصدار 3.1.0",
+              "الإصدار 3.1.2",
+          )
+
+          main = main.replace(
+              "value: materialType,",
+              "initialValue: materialType,",
+          )
+
+          main = main.replace(
+              "value: unit,",
+              "initialValue: unit,",
+          )
+
+          pubspec_path.write_text(
+              pubspec,
+              encoding="utf-8",
+          )
+
+          main_path.write_text(
+              main,
+              encoding="utf-8",
+          )
+
+          print(
+              "Application version updated to 3.1.2+13"
+          )
+
+          print(
+              "Deprecated dropdown properties corrected"
+          )
+          PY
+
+      - name: Remove default Flutter test
         working-directory: smartchem_app
         shell: bash
         run: |
+          rm -rf test
           rm -f analysis_options.yaml
 
-          cat > pubspec.yaml <<'PUBSPEC'
-          name: smartchem_track
-          description: SmartChem laboratory inventory and usage tracking
-          publish_to: "none"
-          version: 3.1.0+11
+          test ! -e test/widget_test.dart
 
-          environment:
-            sdk: ">=3.5.0 <4.0.0"
+          echo "Default MyApp widget test removed"
 
-          dependencies:
-            flutter:
-              sdk: flutter
-            flutter_zxing: 2.2.1
-            shared_preferences: 2.5.3
-
-          dev_dependencies:
-            flutter_test:
-              sdk: flutter
-
-          flutter:
-            uses-material-design: true
-          PUBSPEC
-
-          flutter pub get
-
-      - name: Write SmartChem application
-        working-directory: smartchem_app
+      - name: Verify corrected source
         shell: bash
         run: |
-          cat > lib/main.dart <<'DART'
-          import 'dart:async';
-          import 'dart:convert';
-
-          import 'package:flutter/material.dart';
-          import 'package:flutter_zxing/flutter_zxing.dart';
-          import 'package:shared_preferences/shared_preferences.dart';
-
-          Future<void> main() async {
-            WidgetsFlutterBinding.ensureInitialized();
-
-            final AppStore store = AppStore();
-            await store.load();
-
-            runApp(
-              SmartChemApp(
-                store: store,
-              ),
-            );
-          }
-
-          String twoDigits(int value) {
-            return value.toString().padLeft(2, '0');
-          }
-
-          String formatDate(DateTime date) {
-            return '${twoDigits(date.day)}/'
-                '${twoDigits(date.month)}/'
-                '${date.year}';
-          }
-
-          String formatDateTime(DateTime date) {
-            return '${formatDate(date)} '
-                '${twoDigits(date.hour)}:'
-                '${twoDigits(date.minute)}';
-          }
-
-          String formatQuantity(double value) {
-            if (value == value.roundToDouble()) {
-              return value.toInt().toString();
-            }
-
-            return value.toStringAsFixed(2);
-          }
-
-          double parseQuantity(String value) {
-            return double.tryParse(
-                  value.trim().replaceAll(',', '.'),
-                ) ??
-                0;
-          }
-
-          String normalizeBarcode(String value) {
-            return value
-                .trim()
-                .replaceFirst(
-                  RegExp(r'^\][dD]2'),
-                  '',
-                )
-                .replaceAll(
-                  '<GS>',
-                  '|',
-                )
-                .replaceAll(
-                  String.fromCharCode(29),
-                  '|',
-                );
-          }
-
-          class UserAccount {
-            UserAccount({
-              required this.id,
-              required this.name,
-              required this.username,
-              required this.password,
-              required this.isAdmin,
-              this.isActive = true,
-            });
-
-            final String id;
-
-            String name;
-            String username;
-            String password;
-
-            bool isAdmin;
-            bool isActive;
-
-            Map<String, dynamic> toJson() {
-              return <String, dynamic>{
-                'id': id,
-                'name': name,
-                'username': username,
-                'password': password,
-                'isAdmin': isAdmin,
-                'isActive': isActive,
-              };
-            }
-
-            factory UserAccount.fromJson(
-              Map<String, dynamic> json,
-            ) {
-              return UserAccount(
-                id: json['id'] as String,
-                name: json['name'] as String,
-                username: json['username'] as String,
-                password: json['password'] as String,
-                isAdmin:
-                    json['isAdmin'] as bool? ?? false,
-                isActive:
-                    json['isActive'] as bool? ?? true,
-              );
-            }
-          }
-
-          class UsageRecord {
-            UsageRecord({
-              required this.id,
-              required this.employeeName,
-              required this.quantityUsed,
-              required this.quantityBefore,
-              required this.quantityAfter,
-              required this.createdAt,
-              required this.note,
-            });
-
-            final String id;
-            final String employeeName;
-
-            final double quantityUsed;
-            final double quantityBefore;
-            final double quantityAfter;
-
-            final DateTime createdAt;
-            final String note;
-
-            Map<String, dynamic> toJson() {
-              return <String, dynamic>{
-                'id': id,
-                'employeeName': employeeName,
-                'quantityUsed': quantityUsed,
-                'quantityBefore': quantityBefore,
-                'quantityAfter': quantityAfter,
-                'createdAt':
-                    createdAt.toIso8601String(),
-                'note': note,
-              };
-            }
-
-            factory UsageRecord.fromJson(
-              Map<String, dynamic> json,
-            ) {
-              return UsageRecord(
-                id: json['id'] as String,
-                employeeName:
-                    json['employeeName'] as String,
-                quantityUsed:
-                    (json['quantityUsed'] as num)
-                        .toDouble(),
-                quantityBefore:
-                    (json['quantityBefore'] as num)
-                        .toDouble(),
-                quantityAfter:
-                    (json['quantityAfter'] as num)
-                        .toDouble(),
-                createdAt: DateTime.parse(
-                  json['createdAt'] as String,
-                ),
-                note: json['note'] as String? ?? '',
-              );
-            }
-          }
-
-          class MaterialRecord {
-            MaterialRecord({
-              required this.id,
-              required this.barcode,
-              required this.name,
-              required this.materialType,
-              required this.serialNumber,
-              required this.gtin,
-              required this.lotNumber,
-              required this.catalogNumber,
-              required this.deviceName,
-              required this.department,
-              required this.boxCount,
-              required this.quantityPerBox,
-              required this.unit,
-              required this.expiryDate,
-              required this.registeredBy,
-              required this.registeredAt,
-              required this.totalUsed,
-              required this.usageHistory,
-            });
-
-            final String id;
-            final String barcode;
-
-            String name;
-            String materialType;
-            String serialNumber;
-            String gtin;
-            String lotNumber;
-            String catalogNumber;
-            String deviceName;
-            String department;
-
-            int boxCount;
-            double quantityPerBox;
-            String unit;
-
-            DateTime expiryDate;
-
-            String registeredBy;
-            DateTime registeredAt;
-
-            double totalUsed;
-
-            final List<UsageRecord> usageHistory;
-
-            double get originalQuantity {
-              return boxCount * quantityPerBox;
-            }
-
-            double get remainingQuantity {
-              final double result =
-                  originalQuantity - totalUsed;
-
-              if (result < 0) {
-                return 0;
-              }
-
-              return result;
-            }
-
-            bool get isExpired {
-              final DateTime now = DateTime.now();
-
-              final DateTime today = DateTime(
-                now.year,
-                now.month,
-                now.day,
-              );
-
-              final DateTime expiry = DateTime(
-                expiryDate.year,
-                expiryDate.month,
-                expiryDate.day,
-              );
-
-              return expiry.isBefore(today);
-            }
-
-            bool get isUnused {
-              return usageHistory.isEmpty;
-            }
-
-            String get lastUser {
-              if (usageHistory.isEmpty) {
-                return 'لا يوجد استخدام';
-              }
-
-              return usageHistory.first.employeeName;
-            }
-
-            String get statusText {
-              if (isExpired) {
-                return 'منتهية الصلاحية';
-              }
-
-              if (remainingQuantity <= 0) {
-                return 'نفدت الكمية';
-              }
-
-              if (isUnused) {
-                return 'موجودة — لم تُستخدم';
-              }
-
-              return 'مستخدمة — الرصيد متوفر';
-            }
-
-            Color get statusColor {
-              if (isExpired) {
-                return Colors.red;
-              }
-
-              if (remainingQuantity <= 0) {
-                return Colors.black87;
-              }
-
-              if (isUnused) {
-                return Colors.blueGrey;
-              }
-
-              return Colors.green;
-            }
-
-            Map<String, dynamic> toJson() {
-              return <String, dynamic>{
-                'id': id,
-                'barcode': barcode,
-                'name': name,
-                'materialType': materialType,
-                'serialNumber': serialNumber,
-                'gtin': gtin,
-                'lotNumber': lotNumber,
-                'catalogNumber': catalogNumber,
-                'deviceName': deviceName,
-                'department': department,
-                'boxCount': boxCount,
-                'quantityPerBox': quantityPerBox,
-                'unit': unit,
-                'expiryDate':
-                    expiryDate.toIso8601String(),
-                'registeredBy': registeredBy,
-                'registeredAt':
-                    registeredAt.toIso8601String(),
-                'totalUsed': totalUsed,
-                'usageHistory': usageHistory
-                    .map(
-                      (UsageRecord record) =>
-                          record.toJson(),
-                    )
-                    .toList(),
-              };
-            }
-
-            factory MaterialRecord.fromJson(
-              Map<String, dynamic> json,
-            ) {
-              final List<dynamic> historyJson =
-                  json['usageHistory']
-                          as List<dynamic>? ??
-                      <dynamic>[];
-
-              return MaterialRecord(
-                id: json['id'] as String,
-                barcode: json['barcode'] as String,
-                name: json['name'] as String,
-                materialType:
-                    json['materialType'] as String,
-                serialNumber:
-                    json['serialNumber'] as String? ??
-                        '',
-                gtin: json['gtin'] as String? ?? '',
-                lotNumber:
-                    json['lotNumber'] as String? ?? '',
-                catalogNumber:
-                    json['catalogNumber'] as String? ??
-                        '',
-                deviceName:
-                    json['deviceName'] as String,
-                department:
-                    json['department'] as String,
-                boxCount:
-                    (json['boxCount'] as num).toInt(),
-                quantityPerBox:
-                    (json['quantityPerBox'] as num)
-                        .toDouble(),
-                unit: json['unit'] as String,
-                expiryDate: DateTime.parse(
-                  json['expiryDate'] as String,
-                ),
-                registeredBy:
-                    json['registeredBy'] as String,
-                registeredAt: DateTime.parse(
-                  json['registeredAt'] as String,
-                ),
-                totalUsed:
-                    (json['totalUsed'] as num)
-                        .toDouble(),
-                usageHistory: historyJson
-                    .map(
-                      (dynamic item) =>
-                          UsageRecord.fromJson(
-                        Map<String, dynamic>.from(
-                          item as Map<dynamic, dynamic>,
-                        ),
-                      ),
-                    )
-                    .toList(),
-              );
-            }
-          }
-
-          class ParsedGs1 {
-            const ParsedGs1({
-              required this.raw,
-              required this.gtin,
-              required this.lot,
-              required this.serial,
-              required this.catalog,
-              required this.expiryDate,
-            });
-
-            final String raw;
-            final String gtin;
-            final String lot;
-            final String serial;
-            final String catalog;
-            final DateTime? expiryDate;
-          }
-
-          class VariableField {
-            const VariableField({
-              required this.value,
-              required this.nextIndex,
-            });
-
-            final String value;
-            final int nextIndex;
-          }
-
-          DateTime? parseGs1Expiry(String value) {
-            if (!RegExp(r'^\d{6}$')
-                .hasMatch(value)) {
-              return null;
-            }
-
-            final int year =
-                2000 + int.parse(value.substring(0, 2));
-
-            final int month =
-                int.parse(value.substring(2, 4));
-
-            int day =
-                int.parse(value.substring(4, 6));
-
-            if (month < 1 || month > 12) {
-              return null;
-            }
-
-            final int finalDay =
-                DateTime(year, month + 1, 0).day;
-
-            if (day == 0) {
-              day = finalDay;
-            }
-
-            if (day < 1 || day > finalDay) {
-              return null;
-            }
-
-            return DateTime(
-              year,
-              month,
-              day,
-            );
-          }
-
-          VariableField readVariableField(
-            String value,
-            int startIndex,
-          ) {
-            int index = startIndex;
-
-            while (index < value.length &&
-                value.codeUnitAt(index) != 29) {
-              index++;
-            }
-
-            return VariableField(
-              value: value
-                  .substring(
-                    startIndex,
-                    index,
-                  )
-                  .trim(),
-              nextIndex: index < value.length
-                  ? index + 1
-                  : index,
-            );
-          }
-
-          String parenthesizedField(
-            String raw,
-            String ai,
-          ) {
-            final RegExp expression = RegExp(
-              '\\($ai\\)(.*?)'
-              '(?=\\(\\d{2,4}\\)|\$)',
-              dotAll: true,
-            );
-
-            return expression
-                    .firstMatch(raw)
-                    ?.group(1)
-                    ?.trim() ??
-                '';
-          }
-
-          ParsedGs1 parseGs1Barcode(String input) {
-            String raw = input.trim();
-
-            raw = raw.replaceAll(
-              '<GS>',
-              String.fromCharCode(29),
-            );
-
-            raw = raw.replaceFirst(
-              RegExp(r'^\][dD]2'),
-              '',
-            );
-
-            if (raw.contains('(01)') ||
-                raw.contains('(10)') ||
-                raw.contains('(17)') ||
-                raw.contains('(21)') ||
-                raw.contains('(240)')) {
-              final RegExpMatch? gtinMatch =
-                  RegExp(
-                r'\(01\)(\d{14})',
-              ).firstMatch(raw);
-
-              final RegExpMatch? expiryMatch =
-                  RegExp(
-                r'\(17\)(\d{6})',
-              ).firstMatch(raw);
-
-              return ParsedGs1(
-                raw: input,
-                gtin:
-                    gtinMatch?.group(1)?.trim() ?? '',
-                lot: parenthesizedField(
-                  raw,
-                  '10',
-                ),
-                serial: parenthesizedField(
-                  raw,
-                  '21',
-                ),
-                catalog: parenthesizedField(
-                  raw,
-                  '240',
-                ),
-                expiryDate: parseGs1Expiry(
-                  expiryMatch?.group(1) ?? '',
-                ),
-              );
-            }
-
-            String gtin = '';
-            String lot = '';
-            String serial = '';
-            String catalog = '';
-
-            DateTime? expiryDate;
-
-            int index = 0;
-
-            while (index < raw.length) {
-              if (raw.codeUnitAt(index) == 29) {
-                index++;
-                continue;
-              }
-
-              if (raw.startsWith('01', index) &&
-                  index + 16 <= raw.length) {
-                gtin = raw.substring(
-                  index + 2,
-                  index + 16,
-                );
-
-                index += 16;
-                continue;
-              }
-
-              if (raw.startsWith('17', index) &&
-                  index + 8 <= raw.length) {
-                expiryDate = parseGs1Expiry(
-                  raw.substring(
-                    index + 2,
-                    index + 8,
-                  ),
-                );
-
-                index += 8;
-                continue;
-              }
-
-              if (raw.startsWith('240', index)) {
-                final VariableField field =
-                    readVariableField(
-                  raw,
-                  index + 3,
-                );
-
-                catalog = field.value;
-                index = field.nextIndex;
-                continue;
-              }
-
-              if (raw.startsWith('21', index)) {
-                final VariableField field =
-                    readVariableField(
-                  raw,
-                  index + 2,
-                );
-
-                serial = field.value;
-                index = field.nextIndex;
-                continue;
-              }
-
-              if (raw.startsWith('10', index)) {
-                final VariableField field =
-                    readVariableField(
-                  raw,
-                  index + 2,
-                );
-
-                lot = field.value;
-                index = field.nextIndex;
-                continue;
-              }
-
-              index++;
-            }
-
-            return ParsedGs1(
-              raw: input,
-              gtin: gtin,
-              lot: lot,
-              serial: serial,
-              catalog: catalog,
-              expiryDate: expiryDate,
-            );
-          }
-
-          class AppStore extends ChangeNotifier {
-            static const String usersKey =
-                'smartchem_users_v310';
-
-            static const String materialsKey =
-                'smartchem_materials_v310';
-
-            late SharedPreferences preferences;
-
-            final List<UserAccount> users =
-                <UserAccount>[];
-
-            final List<MaterialRecord> materials =
-                <MaterialRecord>[];
-
-            UserAccount? currentUser;
-
-            Future<void> load() async {
-              preferences =
-                  await SharedPreferences.getInstance();
-
-              final String? usersValue =
-                  preferences.getString(usersKey);
-
-              final String? materialsValue =
-                  preferences.getString(materialsKey);
-
-              if (usersValue != null &&
-                  usersValue.isNotEmpty) {
-                final List<dynamic> decoded =
-                    jsonDecode(usersValue)
-                        as List<dynamic>;
-
-                users.addAll(
-                  decoded.map(
-                    (dynamic item) =>
-                        UserAccount.fromJson(
-                      Map<String, dynamic>.from(
-                        item as Map<dynamic, dynamic>,
-                      ),
-                    ),
-                  ),
-                );
-              }
-
-              if (users.isEmpty) {
-                users.addAll(
-                  <UserAccount>[
-                    UserAccount(
-                      id: 'admin',
-                      name: 'المستخدم الرئيسي',
-                      username: 'admin',
-                      password: '1234',
-                      isAdmin: true,
-                    ),
-                    UserAccount(
-                      id: 'user1',
-                      name: 'المستخدم الأول',
-                      username: 'user1',
-                      password: '1234',
-                      isAdmin: false,
-                    ),
-                    UserAccount(
-                      id: 'user2',
-                      name: 'المستخدم الثاني',
-                      username: 'user2',
-                      password: '1234',
-                      isAdmin: false,
-                    ),
-                  ],
-                );
-
-                await saveUsers();
-              }
-
-              if (materialsValue != null &&
-                  materialsValue.isNotEmpty) {
-                final List<dynamic> decoded =
-                    jsonDecode(materialsValue)
-                        as List<dynamic>;
-
-                materials.addAll(
-                  decoded.map(
-                    (dynamic item) =>
-                        MaterialRecord.fromJson(
-                      Map<String, dynamic>.from(
-                        item as Map<dynamic, dynamic>,
-                      ),
-                    ),
-                  ),
-                );
-              }
-
-              notifyListeners();
-            }
-
-            UserAccount? login(
-              String username,
-              String password,
-            ) {
-              for (final UserAccount user in users) {
-                if (user.username.trim() ==
-                        username.trim() &&
-                    user.password == password &&
-                    user.isActive) {
-                  currentUser = user;
-                  return user;
-                }
-              }
-
-              return null;
-            }
-
-            Future<void> saveUsers() async {
-              await preferences.setString(
-                usersKey,
-                jsonEncode(
-                  users
-                      .map(
-                        (UserAccount user) =>
-                            user.toJson(),
-                      )
-                      .toList(),
-                ),
-              );
-
-              notifyListeners();
-            }
-
-            Future<void> saveMaterials() async {
-              await preferences.setString(
-                materialsKey,
-                jsonEncode(
-                  materials
-                      .map(
-                        (MaterialRecord material) =>
-                            material.toJson(),
-                      )
-                      .toList(),
-                ),
-              );
-
-              notifyListeners();
-            }
-
-            MaterialRecord? materialById(
-              String id,
-            ) {
-              for (final MaterialRecord material
-                  in materials) {
-                if (material.id == id) {
-                  return material;
-                }
-              }
-
-              return null;
-            }
-
-            MaterialRecord? findMaterial(
-              String barcode,
-              ParsedGs1 parsed,
-            ) {
-              final String normalized =
-                  normalizeBarcode(barcode);
-
-              for (final MaterialRecord material
-                  in materials) {
-                if (normalizeBarcode(
-                      material.barcode,
-                    ) ==
-                    normalized) {
-                  return material;
-                }
-              }
-
-              if (parsed.serial.isNotEmpty) {
-                for (final MaterialRecord material
-                    in materials) {
-                  if (material.serialNumber ==
-                      parsed.serial) {
-                    return material;
-                  }
-                }
-              }
-
-              if (parsed.gtin.isNotEmpty &&
-                  parsed.lot.isNotEmpty) {
-                for (final MaterialRecord material
-                    in materials) {
-                  if (material.gtin == parsed.gtin &&
-                      material.lotNumber ==
-                          parsed.lot &&
-                      material.catalogNumber ==
-                          parsed.catalog) {
-                    return material;
-                  }
-                }
-              }
-
-              return null;
-            }
-
-            Future<void> registerMaterial(
-              MaterialRecord material,
-            ) async {
-              materials.insert(
-                0,
-                material,
-              );
-
-              await saveMaterials();
-            }
-
-            Future<String?> recordUsage({
-              required String materialId,
-              required double quantity,
-              required String note,
-            }) async {
-              final MaterialRecord? material =
-                  materialById(materialId);
-
-              if (material == null) {
-                return 'لم يتم العثور على المادة';
-              }
-
-              if (material.isExpired) {
-                return 'لا يمكن استخدام مادة منتهية الصلاحية';
-              }
-
-              if (quantity <= 0) {
-                return 'الكمية المستخدمة يجب أن تكون أكبر من صفر';
-              }
-
-              final double before =
-                  material.remainingQuantity;
-
-              if (quantity > before) {
-                return 'الكمية المستخدمة أكبر من الكمية المتبقية';
-              }
-
-              final double after = before - quantity;
-
-              material.totalUsed += quantity;
-
-              material.usageHistory.insert(
-                0,
-                UsageRecord(
-                  id: DateTime.now()
-                      .microsecondsSinceEpoch
-                      .toString(),
-                  employeeName:
-                      currentUser?.name ?? 'غير معروف',
-                  quantityUsed: quantity,
-                  quantityBefore: before,
-                  quantityAfter: after,
-                  createdAt: DateTime.now(),
-                  note: note,
-                ),
-              );
-
-              await saveMaterials();
-
-              return null;
-            }
-
-            Future<String?> addUser({
-              required String name,
-              required String username,
-              required String password,
-              required bool isAdmin,
-            }) async {
-              for (final UserAccount user in users) {
-                if (user.username.toLowerCase() ==
-                    username.toLowerCase()) {
-                  return 'اسم المستخدم موجود مسبقًا';
-                }
-              }
-
-              users.add(
-                UserAccount(
-                  id: DateTime.now()
-                      .microsecondsSinceEpoch
-                      .toString(),
-                  name: name,
-                  username: username,
-                  password: password,
-                  isAdmin: isAdmin,
-                ),
-              );
-
-              await saveUsers();
-
-              return null;
-            }
-          }
-
-          class SmartChemApp extends StatelessWidget {
-            const SmartChemApp({
-              super.key,
-              required this.store,
-            });
-
-            final AppStore store;
-
-            @override
-            Widget build(BuildContext context) {
-              return MaterialApp(
-                title: 'SmartChem Track',
-                debugShowCheckedModeBanner: false,
-                builder: (
-                  BuildContext context,
-                  Widget? child,
-                ) {
-                  return Directionality(
-                    textDirection: TextDirection.rtl,
-                    child:
-                        child ?? const SizedBox.shrink(),
-                  );
-                },
-                theme: ThemeData(
-                  useMaterial3: true,
-                  colorScheme: ColorScheme.fromSeed(
-                    seedColor:
-                        const Color(0xFF006C70),
-                  ),
-                  scaffoldBackgroundColor:
-                      const Color(0xFFF4F8F8),
-                  inputDecorationTheme:
-                      const InputDecorationTheme(
-                    filled: true,
-                    border: OutlineInputBorder(),
-                  ),
-                ),
-                home: LoginScreen(
-                  store: store,
-                ),
-              );
-            }
-          }
-
-          class LoginScreen extends StatefulWidget {
-            const LoginScreen({
-              super.key,
-              required this.store,
-            });
-
-            final AppStore store;
-
-            @override
-            State<LoginScreen> createState() {
-              return _LoginScreenState();
-            }
-          }
-
-          class _LoginScreenState
-              extends State<LoginScreen> {
-            final TextEditingController
-                usernameController =
-                TextEditingController(
-              text: 'admin',
-            );
-
-            final TextEditingController
-                passwordController =
-                TextEditingController(
-              text: '1234',
-            );
-
-            String errorMessage = '';
-
-            void login() {
-              final UserAccount? user =
-                  widget.store.login(
-                usernameController.text,
-                passwordController.text,
-              );
-
-              if (user == null) {
-                setState(() {
-                  errorMessage =
-                      'بيانات الدخول غير صحيحة أو الحساب موقوف';
-                });
-
-                return;
-              }
-
-              Navigator.of(context).pushReplacement(
-                MaterialPageRoute<void>(
-                  builder: (
-                    BuildContext context,
-                  ) {
-                    return HomeScreen(
-                      store: widget.store,
-                    );
-                  },
-                ),
-              );
-            }
-
-            @override
-            void dispose() {
-              usernameController.dispose();
-              passwordController.dispose();
-              super.dispose();
-            }
-
-            @override
-            Widget build(BuildContext context) {
-              return Scaffold(
-                body: SafeArea(
-                  child: Center(
-                    child: SingleChildScrollView(
-                      padding:
-                          const EdgeInsets.all(24),
-                      child: ConstrainedBox(
-                        constraints:
-                            const BoxConstraints(
-                          maxWidth: 520,
-                        ),
-                        child: Card(
-                          child: Padding(
-                            padding:
-                                const EdgeInsets.all(
-                              24,
-                            ),
-                            child: Column(
-                              crossAxisAlignment:
-                                  CrossAxisAlignment
-                                      .stretch,
-                              children: <Widget>[
-                                const CircleAvatar(
-                                  radius: 45,
-                                  child: Icon(
-                                    Icons.science,
-                                    size: 52,
-                                  ),
-                                ),
-                                const SizedBox(
-                                  height: 14,
-                                ),
-                                const Text(
-                                  'SmartChem Track',
-                                  textAlign:
-                                      TextAlign.center,
-                                  style: TextStyle(
-                                    fontSize: 28,
-                                    fontWeight:
-                                        FontWeight.bold,
-                                  ),
-                                ),
-                                const Text(
-                                  'الإصدار 3.1.0',
-                                  textAlign:
-                                      TextAlign.center,
-                                ),
-                                const SizedBox(
-                                  height: 24,
-                                ),
-                                TextField(
-                                  controller:
-                                      usernameController,
-                                  decoration:
-                                      const InputDecoration(
-                                    labelText:
-                                        'اسم المستخدم',
-                                    prefixIcon: Icon(
-                                      Icons.person,
-                                    ),
-                                  ),
-                                ),
-                                const SizedBox(
-                                  height: 12,
-                                ),
-                                TextField(
-                                  controller:
-                                      passwordController,
-                                  obscureText: true,
-                                  onSubmitted: (
-                                    String value,
-                                  ) {
-                                    login();
-                                  },
-                                  decoration:
-                                      const InputDecoration(
-                                    labelText:
-                                        'كلمة المرور',
-                                    prefixIcon: Icon(
-                                      Icons.lock,
-                                    ),
-                                  ),
-                                ),
-                                if (errorMessage
-                                    .isNotEmpty) ...<
-                                    Widget>[
-                                  const SizedBox(
-                                    height: 10,
-                                  ),
-                                  Text(
-                                    errorMessage,
-                                    style:
-                                        const TextStyle(
-                                      color: Colors.red,
-                                      fontWeight:
-                                          FontWeight.bold,
-                                    ),
-                                  ),
-                                ],
-                                const SizedBox(
-                                  height: 16,
-                                ),
-                                FilledButton(
-                                  onPressed: login,
-                                  child: const Padding(
-                                    padding:
-                                        EdgeInsets
-                                            .symmetric(
-                                      vertical: 14,
-                                    ),
-                                    child: Text(
-                                      'تسجيل الدخول',
-                                    ),
-                                  ),
-                                ),
-                                const SizedBox(
-                                  height: 12,
-                                ),
-                                const Text(
-                                  'الرئيسي: admin / 1234\n'
-                                  'المستخدم الأول: user1 / 1234\n'
-                                  'المستخدم الثاني: user2 / 1234',
-                                  textAlign:
-                                      TextAlign.center,
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              );
-            }
-          }
-
-          class HomeScreen extends StatelessWidget {
-            const HomeScreen({
-              super.key,
-              required this.store,
-            });
-
-            final AppStore store;
-
-            Future<void> scanMaterial(
-              BuildContext context,
-            ) async {
-              final String? raw =
-                  await Navigator.of(context)
-                      .push<String>(
-                MaterialPageRoute<String>(
-                  builder: (
-                    BuildContext context,
-                  ) {
-                    return const ScannerScreen();
-                  },
-                ),
-              );
-
-              if (raw == null ||
-                  raw.trim().isEmpty ||
-                  !context.mounted) {
-                return;
-              }
-
-              final ParsedGs1 parsed =
-                  parseGs1Barcode(raw);
-
-              final MaterialRecord? existing =
-                  store.findMaterial(
-                raw,
-                parsed,
-              );
-
-              if (existing != null) {
-                await Navigator.of(context).push(
-                  MaterialPageRoute<void>(
-                    builder: (
-                      BuildContext context,
-                    ) {
-                      return MaterialDetailsScreen(
-                        store: store,
-                        materialId: existing.id,
-                      );
-                    },
-                  ),
-                );
-
-                return;
-              }
-
-              final MaterialRecord? registered =
-                  await Navigator.of(context)
-                      .push<MaterialRecord>(
-                MaterialPageRoute<MaterialRecord>(
-                  builder: (
-                    BuildContext context,
-                  ) {
-                    return RegisterMaterialScreen(
-                      store: store,
-                      rawBarcode: raw,
-                      parsed: parsed,
-                    );
-                  },
-                ),
-              );
-
-              if (registered == null ||
-                  !context.mounted) {
-                return;
-              }
-
-              await Navigator.of(context).push(
-                MaterialPageRoute<void>(
-                  builder: (
-                    BuildContext context,
-                  ) {
-                    return MaterialDetailsScreen(
-                      store: store,
-                      materialId: registered.id,
-                    );
-                  },
-                ),
-              );
-            }
-
-            void logout(BuildContext context) {
-              store.currentUser = null;
-
-              Navigator.of(context).pushReplacement(
-                MaterialPageRoute<void>(
-                  builder: (
-                    BuildContext context,
-                  ) {
-                    return LoginScreen(
-                      store: store,
-                    );
-                  },
-                ),
-              );
-            }
-
-            @override
-            Widget build(BuildContext context) {
-              return AnimatedBuilder(
-                animation: store,
-                builder: (
-                  BuildContext context,
-                  Widget? child,
-                ) {
-                  final int total =
-                      store.materials.length;
-
-                  final int unused = store.materials
-                      .where(
-                        (MaterialRecord material) =>
-                            material.isUnused,
-                      )
-                      .length;
-
-                  final int available = store.materials
-                      .where(
-                        (MaterialRecord material) =>
-                            !material.isExpired &&
-                            material.remainingQuantity >
-                                0,
-                      )
-                      .length;
-
-                  final int finished = store.materials
-                      .where(
-                        (MaterialRecord material) =>
-                            material.isExpired ||
-                            material.remainingQuantity <=
-                                0,
-                      )
-                      .length;
-
-                  return Scaffold(
-                    appBar: AppBar(
-                      title: const Text(
-                        'SmartChem Track',
-                      ),
-                      actions: <Widget>[
-                        IconButton(
-                          tooltip:
-                              'تسجيل الخروج',
-                          onPressed: () {
-                            logout(context);
-                          },
-                          icon: const Icon(
-                            Icons.logout,
-                          ),
-                        ),
-                      ],
-                    ),
-                    body: ListView(
-                      padding:
-                          const EdgeInsets.all(16),
-                      children: <Widget>[
-                        Text(
-                          'مرحبًا، '
-                          '${store.currentUser?.name ?? ''}',
-                          style: Theme.of(context)
-                              .textTheme
-                              .titleLarge,
-                        ),
-                        const SizedBox(
-                          height: 14,
-                        ),
-                        GridView.count(
-                          crossAxisCount: 2,
-                          shrinkWrap: true,
-                          physics:
-                              const NeverScrollableScrollPhysics(),
-                          mainAxisSpacing: 10,
-                          crossAxisSpacing: 10,
-                          childAspectRatio: 1.45,
-                          children: <Widget>[
-                            SummaryCard(
-                              title:
-                                  'إجمالي المواد',
-                              value: total,
-                              color:
-                                  Colors.blue,
-                            ),
-                            SummaryCard(
-                              title:
-                                  'غير مستخدمة',
-                              value: unused,
-                              color:
-                                  Colors.blueGrey,
-                            ),
-                            SummaryCard(
-                              title:
-                                  'متوفرة',
-                              value: available,
-                              color:
-                                  Colors.green,
-                            ),
-                            SummaryCard(
-                              title:
-                                  'منتهية أو نافدة',
-                              value: finished,
-                              color:
-                                  Colors.red,
-                            ),
-                          ],
-                        ),
-                        const SizedBox(
-                          height: 18,
-                        ),
-                        FilledButton.icon(
-                          onPressed: () {
-                            scanMaterial(context);
-                          },
-                          icon: const Icon(
-                            Icons.qr_code_scanner,
-                          ),
-                          label: const Padding(
-                            padding:
-                                EdgeInsets.symmetric(
-                              vertical: 15,
-                            ),
-                            child: Text(
-                              'مسح باركود المادة',
-                            ),
-                          ),
-                        ),
-                        const SizedBox(
-                          height: 10,
-                        ),
-                        OutlinedButton.icon(
-                          onPressed: () {
-                            Navigator.of(context).push(
-                              MaterialPageRoute<void>(
-                                builder: (
-                                  BuildContext context,
-                                ) {
-                                  return InventoryScreen(
-                                    store: store,
-                                  );
-                                },
-                              ),
-                            );
-                          },
-                          icon: const Icon(
-                            Icons.inventory_2,
-                          ),
-                          label: const Padding(
-                            padding:
-                                EdgeInsets.symmetric(
-                              vertical: 13,
-                            ),
-                            child: Text(
-                              'المخزون وسجل المواد',
-                            ),
-                          ),
-                        ),
-                        if (store.currentUser
-                                ?.isAdmin ==
-                            true) ...<Widget>[
-                          const SizedBox(
-                            height: 10,
-                          ),
-                          OutlinedButton.icon(
-                            onPressed: () {
-                              Navigator.of(context).push(
-                                MaterialPageRoute<void>(
-                                  builder: (
-                                    BuildContext context,
-                                  ) {
-                                    return UsersScreen(
-                                      store: store,
-                                    );
-                                  },
-                                ),
-                              );
-                            },
-                            icon: const Icon(
-                              Icons.manage_accounts,
-                            ),
-                            label: const Padding(
-                              padding:
-                                  EdgeInsets.symmetric(
-                                vertical: 13,
-                              ),
-                              child: Text(
-                                'إدارة المستخدمين',
-                              ),
-                            ),
-                          ),
-                        ],
-                        const SizedBox(
-                          height: 16,
-                        ),
-                        const Card(
-                          child: Padding(
-                            padding:
-                                EdgeInsets.all(14),
-                            child: Text(
-                              'البيانات محفوظة محليًا على هذا الجهاز '
-                              'ولا تختفي عند إغلاق التطبيق.',
-                              textAlign:
-                                  TextAlign.center,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  );
-                },
-              );
-            }
-          }
-
-          class SummaryCard extends StatelessWidget {
-            const SummaryCard({
-              super.key,
-              required this.title,
-              required this.value,
-              required this.color,
-            });
-
-            final String title;
-            final int value;
-            final Color color;
-
-            @override
-            Widget build(BuildContext context) {
-              return Card(
-                child: Container(
-                  padding:
-                      const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    border: Border(
-                      right: BorderSide(
-                        color: color,
-                        width: 7,
-                      ),
-                    ),
-                  ),
-                  child: Column(
-                    mainAxisAlignment:
-                        MainAxisAlignment.center,
-                    children: <Widget>[
-                      Text(
-                        value.toString(),
-                        style: const TextStyle(
-                          fontSize: 27,
-                          fontWeight:
-                              FontWeight.bold,
-                        ),
-                      ),
-                      Text(
-                        title,
-                        textAlign:
-                            TextAlign.center,
-                      ),
-                    ],
-                  ),
-                ),
-              );
-            }
-          }
-
-          class ScannerScreen extends StatefulWidget {
-            const ScannerScreen({
-              super.key,
-            });
-
-            @override
-            State<ScannerScreen> createState() {
-              return _ScannerScreenState();
-            }
-          }
-
-          class _ScannerScreenState
-              extends State<ScannerScreen> {
-            Key scannerKey = UniqueKey();
-
-            bool codeHandled = false;
-            bool controllerReady = false;
-
-            String cameraError = '';
-
-            Timer? cameraTimer;
-
-            @override
-            void initState() {
-              super.initState();
-              startCameraTimer();
-            }
-
-            void startCameraTimer() {
-              cameraTimer?.cancel();
-
-              cameraTimer = Timer(
-                const Duration(seconds: 15),
-                () {
-                  if (!mounted ||
-                      controllerReady ||
-                      cameraError.isNotEmpty) {
-                    return;
-                  }
-
-                  setState(() {
-                    cameraError =
-                        'تأخر تشغيل الكاميرا. '
-                        'تأكد من منح التطبيق صلاحية الكاميرا '
-                        'ثم اضغط إعادة المحاولة.';
-                  });
-                },
-              );
-            }
-
-            void onControllerCreated(
-              CameraController? controller,
-              Exception? error,
-            ) {
-              if (!mounted) {
-                return;
-              }
-
-              if (error != null) {
-                cameraTimer?.cancel();
-
-                setState(() {
-                  cameraError = error.toString();
-                  controllerReady = false;
-                });
-
-                return;
-              }
-
-              if (controller != null) {
-                cameraTimer?.cancel();
-
-                setState(() {
-                  controllerReady = true;
-                  cameraError = '';
-                });
-              }
-            }
-
-            void onScan(Code code) {
-              if (codeHandled ||
-                  !code.isValid ||
-                  !mounted) {
-                return;
-              }
-
-              final String value =
-                  code.text?.trim() ?? '';
-
-              if (value.isEmpty) {
-                return;
-              }
-
-              codeHandled = true;
-              cameraTimer?.cancel();
-
-              Navigator.of(context).pop(
-                value,
-              );
-            }
-
-            void retryCamera() {
-              setState(() {
-                scannerKey = UniqueKey();
-                cameraError = '';
-                controllerReady = false;
-                codeHandled = false;
-              });
-
-              startCameraTimer();
-            }
-
-            Future<void> manualEntry() async {
-              final TextEditingController
-                  controller =
-                  TextEditingController(
-                text:
-                    '(01)00380740150005'
-                    '(17)260731'
-                    '(10)50532Y600'
-                    '(240)09P9510',
-              );
-
-              final String? result =
-                  await showDialog<String>(
-                context: context,
-                builder: (
-                  BuildContext dialogContext,
-                ) {
-                  return AlertDialog(
-                    title: const Text(
-                      'إدخال الباركود يدويًا',
-                    ),
-                    content: TextField(
-                      controller: controller,
-                      maxLines: 5,
-                      decoration:
-                          const InputDecoration(
-                        labelText:
-                            'الباركود أو GS1',
-                      ),
-                    ),
-                    actions: <Widget>[
-                      TextButton(
-                        onPressed: () {
-                          Navigator.of(
-                            dialogContext,
-                          ).pop();
-                        },
-                        child:
-                            const Text('إلغاء'),
-                      ),
-                      FilledButton(
-                        onPressed: () {
-                          Navigator.of(
-                            dialogContext,
-                          ).pop(
-                            controller.text.trim(),
-                          );
-                        },
-                        child:
-                            const Text('متابعة'),
-                      ),
-                    ],
-                  );
-                },
-              );
-
-              controller.dispose();
-
-              if (result != null &&
-                  result.isNotEmpty &&
-                  mounted) {
-                Navigator.of(context).pop(
-                  result,
-                );
-              }
-            }
-
-            @override
-            void dispose() {
-              cameraTimer?.cancel();
-              super.dispose();
-            }
-
-            @override
-            Widget build(BuildContext context) {
-              return Scaffold(
-                backgroundColor: Colors.black,
-                appBar: AppBar(
-                  title:
-                      const Text('مسح المادة'),
-                  actions: <Widget>[
-                    IconButton(
-                      tooltip:
-                          'إدخال يدوي',
-                      onPressed: manualEntry,
-                      icon: const Icon(
-                        Icons.keyboard,
-                      ),
-                    ),
-                  ],
-                ),
-                body: Stack(
-                  fit: StackFit.expand,
-                  children: <Widget>[
-                    ReaderWidget(
-                      key: scannerKey,
-                      onScan: onScan,
-                      onControllerCreated:
-                          onControllerCreated,
-                      codeFormat: Format.any,
-                      tryHarder: true,
-                      tryInverted: true,
-                      tryRotate: true,
-                      tryDownscale: false,
-                      scanDelay:
-                          const Duration(
-                        milliseconds: 500,
-                      ),
-                      scanDelaySuccess:
-                          const Duration(
-                        milliseconds: 1000,
-                      ),
-                      resolution:
-                          ResolutionPreset.high,
-                      lensDirection:
-                          CameraLensDirection.back,
-                      showScannerOverlay: true,
-                      showFlashlight: true,
-                      showToggleCamera: true,
-                      showGallery: false,
-                      allowPinchZoom: true,
-                      loading:
-                          const ColoredBox(
-                        color: Colors.black,
-                        child: Center(
-                          child: Column(
-                            mainAxisSize:
-                                MainAxisSize.min,
-                            children: <Widget>[
-                              CircularProgressIndicator(),
-                              SizedBox(
-                                height: 12,
-                              ),
-                              Text(
-                                'جاري تشغيل الكاميرا...',
-                                style: TextStyle(
-                                  color:
-                                      Colors.white,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
-                    if (cameraError.isNotEmpty)
-                      ColoredBox(
-                        color: Colors.black,
-                        child: Center(
-                          child: Card(
-                            margin:
-                                const EdgeInsets.all(
-                              24,
-                            ),
-                            child: Padding(
-                              padding:
-                                  const EdgeInsets.all(
-                                20,
-                              ),
-                              child: Column(
-                                mainAxisSize:
-                                    MainAxisSize.min,
-                                children: <Widget>[
-                                  const Icon(
-                                    Icons
-                                        .camera_alt_outlined,
-                                    size: 58,
-                                  ),
-                                  const SizedBox(
-                                    height: 12,
-                                  ),
-                                  const Text(
-                                    'تعذر تشغيل الكاميرا',
-                                    style: TextStyle(
-                                      fontSize: 18,
-                                      fontWeight:
-                                          FontWeight.bold,
-                                    ),
-                                  ),
-                                  const SizedBox(
-                                    height: 8,
-                                  ),
-                                  Text(
-                                    cameraError,
-                                    textAlign:
-                                        TextAlign.center,
-                                  ),
-                                  const SizedBox(
-                                    height: 14,
-                                  ),
-                                  FilledButton.icon(
-                                    onPressed:
-                                        retryCamera,
-                                    icon: const Icon(
-                                      Icons.refresh,
-                                    ),
-                                    label: const Text(
-                                      'إعادة المحاولة',
-                                    ),
-                                  ),
-                                  TextButton(
-                                    onPressed:
-                                        manualEntry,
-                                    child: const Text(
-                                      'إدخال الباركود يدويًا',
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                  ],
-                ),
-              );
-            }
-          }
-
-          class RegisterMaterialScreen
-              extends StatefulWidget {
-            const RegisterMaterialScreen({
-              super.key,
-              required this.store,
-              required this.rawBarcode,
-              required this.parsed,
-            });
-
-            final AppStore store;
-            final String rawBarcode;
-            final ParsedGs1 parsed;
-
-            @override
-            State<RegisterMaterialScreen>
-                createState() {
-              return _RegisterMaterialScreenState();
-            }
-          }
-
-          class _RegisterMaterialScreenState
-              extends State<RegisterMaterialScreen> {
-            final GlobalKey<FormState> formKey =
-                GlobalKey<FormState>();
-
-            final TextEditingController
-                nameController =
-                TextEditingController();
-
-            final TextEditingController
-                serialController =
-                TextEditingController();
-
-            final TextEditingController
-                deviceController =
-                TextEditingController();
-
-            final TextEditingController
-                departmentController =
-                TextEditingController(
-              text: 'قسم الكيمياء',
-            );
-
-            final TextEditingController
-                boxCountController =
-                TextEditingController(
-              text: '1',
-            );
-
-            final TextEditingController
-                quantityPerBoxController =
-                TextEditingController(
-              text: '1',
-            );
-
-            String materialType = 'Reagent';
-            String unit = 'mL';
-
-            late DateTime expiryDate;
-
-            @override
-            void initState() {
-              super.initState();
-
-              serialController.text =
-                  widget.parsed.serial;
-
-              expiryDate =
-                  widget.parsed.expiryDate ??
-                      DateTime.now().add(
-                        const Duration(
-                          days: 365,
-                        ),
-                      );
-            }
-
-            double get totalPreview {
-              final int boxes =
-                  int.tryParse(
-                        boxCountController.text,
-                      ) ??
-                      0;
-
-              final double quantityPerBox =
-                  parseQuantity(
-                quantityPerBoxController.text,
-              );
-
-              return boxes * quantityPerBox;
-            }
-
-            String? requiredValidator(
-              String? value,
-            ) {
-              if (value == null ||
-                  value.trim().isEmpty) {
-                return 'هذا البيان مطلوب';
-              }
-
-              return null;
-            }
-
-            Future<void> saveMaterial() async {
-              if (!(formKey.currentState
-                      ?.validate() ??
-                  false)) {
-                return;
-              }
-
-              final int boxes = int.tryParse(
-                    boxCountController.text,
-                  ) ??
-                  0;
-
-              final double quantityPerBox =
-                  parseQuantity(
-                quantityPerBoxController.text,
-              );
-
-              if (boxes <= 0) {
-                ScaffoldMessenger.of(context)
-                    .showSnackBar(
-                  const SnackBar(
-                    content: Text(
-                      'عدد العلب يجب أن يكون أكبر من صفر',
-                    ),
-                  ),
-                );
-
-                return;
-              }
-
-              if (quantityPerBox <= 0) {
-                ScaffoldMessenger.of(context)
-                    .showSnackBar(
-                  const SnackBar(
-                    content: Text(
-                      'كمية كل علبة يجب أن تكون أكبر من صفر',
-                    ),
-                  ),
-                );
-
-                return;
-              }
-
-              final MaterialRecord? duplicate =
-                  widget.store.findMaterial(
-                widget.rawBarcode,
-                widget.parsed,
-              );
-
-              if (duplicate != null) {
-                ScaffoldMessenger.of(context)
-                    .showSnackBar(
-                  const SnackBar(
-                    content: Text(
-                      'هذه المادة مسجلة مسبقًا',
-                    ),
-                  ),
-                );
-
-                return;
-              }
-
-              final MaterialRecord material =
-                  MaterialRecord(
-                id: 'CHEM-'
-                    '${DateTime.now().millisecondsSinceEpoch}',
-                barcode:
-                    widget.rawBarcode,
-                name:
-                    nameController.text.trim(),
-                materialType: materialType,
-                serialNumber:
-                    serialController.text.trim(),
-                gtin: widget.parsed.gtin,
-                lotNumber:
-                    widget.parsed.lot,
-                catalogNumber:
-                    widget.parsed.catalog,
-                deviceName:
-                    deviceController.text.trim(),
-                department:
-                    departmentController.text
-                        .trim(),
-                boxCount: boxes,
-                quantityPerBox:
-                    quantityPerBox,
-                unit: unit,
-                expiryDate: expiryDate,
-                registeredBy:
-                    widget.store.currentUser?.name ??
-                        'غير معروف',
-                registeredAt:
-                    DateTime.now(),
-                totalUsed: 0,
-                usageHistory: <UsageRecord>[],
-              );
-
-              await widget.store.registerMaterial(
-                material,
-              );
-
-              if (!mounted) {
-                return;
-              }
-
-              Navigator.of(context).pop(
-                material,
-              );
-            }
-
-            @override
-            void dispose() {
-              nameController.dispose();
-              serialController.dispose();
-              deviceController.dispose();
-              departmentController.dispose();
-              boxCountController.dispose();
-              quantityPerBoxController.dispose();
-              super.dispose();
-            }
-
-            @override
-            Widget build(BuildContext context) {
-              return Scaffold(
-                appBar: AppBar(
-                  title: const Text(
-                    'تسجيل مادة جديدة',
-                  ),
-                ),
-                body: Form(
-                  key: formKey,
-                  child: ListView(
-                    padding:
-                        const EdgeInsets.all(16),
-                    children: <Widget>[
-                      const Card(
-                        child: Padding(
-                          padding:
-                              EdgeInsets.all(12),
-                          child: Text(
-                            'المادة غير مسجلة. '
-                            'تم استخراج البيانات المتوفرة من الباركود. '
-                            'أكمل البيانات الناقصة ثم احفظ.',
-                          ),
-                        ),
-                      ),
-                      const SizedBox(
-                        height: 10,
-                      ),
-                      TextFormField(
-                        controller:
-                            nameController,
-                        validator:
-                            requiredValidator,
-                        decoration:
-                            const InputDecoration(
-                          labelText:
-                              'اسم المادة',
-                        ),
-                      ),
-                      const SizedBox(
-                        height: 12,
-                      ),
-                      DropdownButtonFormField<
-                          String>(
-                        value: materialType,
-                        decoration:
-                            const InputDecoration(
-                          labelText:
-                              'نوع المادة',
-                        ),
-                        items: const <
-                            DropdownMenuItem<String>>[
-                          DropdownMenuItem<
-                              String>(
-                            value: 'Reagent',
-                            child:
-                                Text('Reagent'),
-                          ),
-                          DropdownMenuItem<
-                              String>(
-                            value: 'Control',
-                            child:
-                                Text('Control'),
-                          ),
-                          DropdownMenuItem<
-                              String>(
-                            value:
-                                'Calibrator',
-                            child: Text(
-                              'Calibrator',
-                            ),
-                          ),
-                        ],
-                        onChanged: (
-                          String? value,
-                        ) {
-                          if (value != null) {
-                            setState(() {
-                              materialType =
-                                  value;
-                            });
-                          }
-                        },
-                      ),
-                      const SizedBox(
-                        height: 12,
-                      ),
-                      TextFormField(
-                        controller:
-                            serialController,
-                        decoration:
-                            const InputDecoration(
-                          labelText:
-                              'الرقم التسلسلي',
-                        ),
-                      ),
-                      const SizedBox(
-                        height: 12,
-                      ),
-                      TextFormField(
-                        controller:
-                            deviceController,
-                        validator:
-                            requiredValidator,
-                        decoration:
-                            const InputDecoration(
-                          labelText:
-                              'اسم الجهاز',
-                        ),
-                      ),
-                      const SizedBox(
-                        height: 12,
-                      ),
-                      TextFormField(
-                        controller:
-                            departmentController,
-                        validator:
-                            requiredValidator,
-                        decoration:
-                            const InputDecoration(
-                          labelText:
-                              'القسم',
-                        ),
-                      ),
-                      const SizedBox(
-                        height: 12,
-                      ),
-                      TextFormField(
-                        controller:
-                            boxCountController,
-                        keyboardType:
-                            TextInputType.number,
-                        onChanged: (
-                          String value,
-                        ) {
-                          setState(() {});
-                        },
-                        decoration:
-                            const InputDecoration(
-                          labelText:
-                              'عدد العلب',
-                        ),
-                      ),
-                      const SizedBox(
-                        height: 12,
-                      ),
-                      TextFormField(
-                        controller:
-                            quantityPerBoxController,
-                        keyboardType:
-                            const TextInputType
-                                .numberWithOptions(
-                          decimal: true,
-                        ),
-                        onChanged: (
-                          String value,
-                        ) {
-                          setState(() {});
-                        },
-                        decoration:
-                            const InputDecoration(
-                          labelText:
-                              'كمية كل علبة',
-                        ),
-                      ),
-                      const SizedBox(
-                        height: 12,
-                      ),
-                      DropdownButtonFormField<
-                          String>(
-                        value: unit,
-                        decoration:
-                            const InputDecoration(
-                          labelText:
-                              'وحدة القياس',
-                        ),
-                        items: const <
-                            DropdownMenuItem<String>>[
-                          DropdownMenuItem<
-                              String>(
-                            value: 'mL',
-                            child: Text('mL'),
-                          ),
-                          DropdownMenuItem<
-                              String>(
-                            value: 'Tests',
-                            child:
-                                Text('Tests'),
-                          ),
-                          DropdownMenuItem<
-                              String>(
-                            value: 'Vials',
-                            child:
-                                Text('Vials'),
-                          ),
-                          DropdownMenuItem<
-                              String>(
-                            value: 'Bottles',
-                            child:
-                                Text('Bottles'),
-                          ),
-                          DropdownMenuItem<
-                              String>(
-                            value: 'Packs',
-                            child:
-                                Text('Packs'),
-                          ),
-                        ],
-                        onChanged: (
-                          String? value,
-                        ) {
-                          if (value != null) {
-                            setState(() {
-                              unit = value;
-                            });
-                          }
-                        },
-                      ),
-                      const SizedBox(
-                        height: 12,
-                      ),
-                      Card(
-                        child: ListTile(
-                          title: const Text(
-                            'تاريخ الانتهاء',
-                          ),
-                          subtitle: Text(
-                            formatDate(
-                              expiryDate,
-                            ),
-                          ),
-                          trailing: const Icon(
-                            Icons.calendar_month,
-                          ),
-                          onTap: () async {
-                            final DateTime? selected =
-                                await showDatePicker(
-                              context: context,
-                              initialDate:
-                                  expiryDate,
-                              firstDate:
-                                  DateTime(2020),
-                              lastDate:
-                                  DateTime(2100),
-                            );
-
-                            if (selected != null &&
-                                mounted) {
-                              setState(() {
-                                expiryDate =
-                                    selected;
-                              });
-                            }
-                          },
-                        ),
-                      ),
-                      const SizedBox(
-                        height: 10,
-                      ),
-                      Card(
-                        child: Padding(
-                          padding:
-                              const EdgeInsets.all(
-                            14,
-                          ),
-                          child: Column(
-                            crossAxisAlignment:
-                                CrossAxisAlignment
-                                    .start,
-                            children: <Widget>[
-                              Text(
-                                'إجمالي الكمية: '
-                                '${formatQuantity(totalPreview)} '
-                                '$unit',
-                                style:
-                                    const TextStyle(
-                                  fontSize: 18,
-                                  fontWeight:
-                                      FontWeight.bold,
-                                ),
-                              ),
-                              const SizedBox(
-                                height: 8,
-                              ),
-                              Text(
-                                'الكمية المستخدمة: 0 $unit',
-                              ),
-                              Text(
-                                'الكمية المتبقية: '
-                                '${formatQuantity(totalPreview)} '
-                                '$unit',
-                              ),
-                              const Divider(),
-                              Text(
-                                'GTIN: '
-                                '${widget.parsed.gtin.isEmpty ? 'غير موجود' : widget.parsed.gtin}',
-                              ),
-                              Text(
-                                'LOT: '
-                                '${widget.parsed.lot.isEmpty ? 'غير موجود' : widget.parsed.lot}',
-                              ),
-                              Text(
-                                'رقم الكتالوج: '
-                                '${widget.parsed.catalog.isEmpty ? 'غير موجود' : widget.parsed.catalog}',
-                              ),
-                              Text(
-                                'تاريخ GS1: '
-                                '${formatDate(expiryDate)}',
-                              ),
-                              Text(
-                                'سيسجلها: '
-                                '${widget.store.currentUser?.name ?? ''}',
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                      const SizedBox(
-                        height: 16,
-                      ),
-                      FilledButton(
-                        onPressed:
-                            saveMaterial,
-                        child: const Padding(
-                          padding:
-                              EdgeInsets.symmetric(
-                            vertical: 14,
-                          ),
-                          child: Text(
-                            'حفظ المادة',
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              );
-            }
-          }
-
-          class MaterialDetailsScreen
-              extends StatelessWidget {
-            const MaterialDetailsScreen({
-              super.key,
-              required this.store,
-              required this.materialId,
-            });
-
-            final AppStore store;
-            final String materialId;
-
-            Future<void> recordUsage(
-              BuildContext context,
-              MaterialRecord material,
-            ) async {
-              if (material.isExpired) {
-                ScaffoldMessenger.of(context)
-                    .showSnackBar(
-                  const SnackBar(
-                    backgroundColor:
-                        Colors.red,
-                    content: Text(
-                      'لا يمكن استخدام مادة منتهية الصلاحية',
-                    ),
-                  ),
-                );
-
-                return;
-              }
-
-              if (material.remainingQuantity <=
-                  0) {
-                ScaffoldMessenger.of(context)
-                    .showSnackBar(
-                  const SnackBar(
-                    content: Text(
-                      'لا توجد كمية متبقية',
-                    ),
-                  ),
-                );
-
-                return;
-              }
-
-              final TextEditingController
-                  quantityController =
-                  TextEditingController();
-
-              final TextEditingController
-                  noteController =
-                  TextEditingController();
-
-              final Map<String, String>? result =
-                  await showDialog<
-                      Map<String, String>>(
-                context: context,
-                builder: (
-                  BuildContext dialogContext,
-                ) {
-                  return AlertDialog(
-                    title: const Text(
-                      'تسجيل استخدام جديد',
-                    ),
-                    content:
-                        SingleChildScrollView(
-                      child: Column(
-                        mainAxisSize:
-                            MainAxisSize.min,
-                        children: <Widget>[
-                          Text(
-                            'الموظف: '
-                            '${store.currentUser?.name ?? ''}',
-                          ),
-                          const SizedBox(
-                            height: 5,
-                          ),
-                          Text(
-                            'المتبقي حاليًا: '
-                            '${formatQuantity(material.remainingQuantity)} '
-                            '${material.unit}',
-                            style:
-                                const TextStyle(
-                              fontWeight:
-                                  FontWeight.bold,
-                            ),
-                          ),
-                          const SizedBox(
-                            height: 12,
-                          ),
-                          TextField(
-                            controller:
-                                quantityController,
-                            keyboardType:
-                                const TextInputType
-                                    .numberWithOptions(
-                              decimal: true,
-                            ),
-                            decoration:
-                                InputDecoration(
-                              labelText:
-                                  'الكمية المستخدمة الآن '
-                                  '(${material.unit})',
-                            ),
-                          ),
-                          const SizedBox(
-                            height: 12,
-                          ),
-                          TextField(
-                            controller:
-                                noteController,
-                            maxLines: 2,
-                            decoration:
-                                const InputDecoration(
-                              labelText:
-                                  'ملاحظة اختيارية',
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    actions: <Widget>[
-                      TextButton(
-                        onPressed: () {
-                          Navigator.of(
-                            dialogContext,
-                          ).pop();
-                        },
-                        child:
-                            const Text('إلغاء'),
-                      ),
-                      FilledButton(
-                        onPressed: () {
-                          Navigator.of(
-                            dialogContext,
-                          ).pop(
-                            <String, String>{
-                              'quantity':
-                                  quantityController
-                                      .text,
-                              'note':
-                                  noteController.text,
-                            },
-                          );
-                        },
-                        child:
-                            const Text('حفظ'),
-                      ),
-                    ],
-                  );
-                },
-              );
-
-              quantityController.dispose();
-              noteController.dispose();
-
-              if (result == null) {
-                return;
-              }
-
-              final double quantity =
-                  parseQuantity(
-                result['quantity'] ?? '',
-              );
-
-              final String? error =
-                  await store.recordUsage(
-                materialId: material.id,
-                quantity: quantity,
-                note:
-                    result['note']?.trim() ?? '',
-              );
-
-              if (!context.mounted) {
-                return;
-              }
-
-              if (error != null) {
-                ScaffoldMessenger.of(context)
-                    .showSnackBar(
-                  SnackBar(
-                    backgroundColor:
-                        Colors.red,
-                    content: Text(error),
-                  ),
-                );
-
-                return;
-              }
-
-              ScaffoldMessenger.of(context)
-                  .showSnackBar(
-                const SnackBar(
-                  content: Text(
-                    'تم تسجيل الاستخدام وتحديث الكمية المتبقية',
-                  ),
-                ),
-              );
-            }
-
-            @override
-            Widget build(BuildContext context) {
-              return AnimatedBuilder(
-                animation: store,
-                builder: (
-                  BuildContext context,
-                  Widget? child,
-                ) {
-                  final MaterialRecord? material =
-                      store.materialById(
-                    materialId,
-                  );
-
-                  if (material == null) {
-                    return const Scaffold(
-                      body: Center(
-                        child: Text(
-                          'لم يتم العثور على المادة',
-                        ),
-                      ),
-                    );
-                  }
-
-                  return Scaffold(
-                    appBar: AppBar(
-                      title: Text(
-                        material.name,
-                      ),
-                    ),
-                    floatingActionButton:
-                        FloatingActionButton
-                            .extended(
-                      onPressed: () {
-                        recordUsage(
-                          context,
-                          material,
-                        );
-                      },
-                      icon: const Icon(
-                        Icons.remove_circle_outline,
-                      ),
-                      label: const Text(
-                        'تسجيل استخدام',
-                      ),
-                    ),
-                    body: ListView(
-                      padding:
-                          const EdgeInsets.all(
-                        16,
-                      ),
-                      children: <Widget>[
-                        Card(
-                          child: Padding(
-                            padding:
-                                const EdgeInsets
-                                    .all(
-                              16,
-                            ),
-                            child: Column(
-                              children: <Widget>[
-                                Text(
-                                  material.statusText,
-                                  textAlign:
-                                      TextAlign.center,
-                                  style: TextStyle(
-                                    color: material
-                                        .statusColor,
-                                    fontSize: 18,
-                                    fontWeight:
-                                        FontWeight.bold,
-                                  ),
-                                ),
-                                const SizedBox(
-                                  height: 14,
-                                ),
-                                Row(
-                                  children: <Widget>[
-                                    QuantityBox(
-                                      title:
-                                          'الأصلية',
-                                      value:
-                                          '${formatQuantity(material.originalQuantity)} '
-                                          '${material.unit}',
-                                    ),
-                                    QuantityBox(
-                                      title:
-                                          'المستخدمة',
-                                      value:
-                                          '${formatQuantity(material.totalUsed)} '
-                                          '${material.unit}',
-                                    ),
-                                    QuantityBox(
-                                      title:
-                                          'المتبقية',
-                                      value:
-                                          '${formatQuantity(material.remainingQuantity)} '
-                                          '${material.unit}',
-                                    ),
-                                  ],
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                        const SizedBox(
-                          height: 10,
-                        ),
-                        Card(
-                          child: Padding(
-                            padding:
-                                const EdgeInsets
-                                    .all(
-                              14,
-                            ),
-                            child: Column(
-                              children: <Widget>[
-                                InfoLine(
-                                  label:
-                                      'نوع المادة',
-                                  value: material
-                                      .materialType,
-                                ),
-                                InfoLine(
-                                  label:
-                                      'الرقم الداخلي',
-                                  value:
-                                      material.id,
-                                ),
-                                InfoLine(
-                                  label:
-                                      'الرقم التسلسلي',
-                                  value: material
-                                          .serialNumber
-                                          .isEmpty
-                                      ? 'غير موجود'
-                                      : material
-                                          .serialNumber,
-                                ),
-                                InfoLine(
-                                  label: 'LOT',
-                                  value: material
-                                          .lotNumber
-                                          .isEmpty
-                                      ? 'غير موجود'
-                                      : material
-                                          .lotNumber,
-                                ),
-                                InfoLine(
-                                  label: 'GTIN',
-                                  value: material
-                                          .gtin
-                                          .isEmpty
-                                      ? 'غير موجود'
-                                      : material.gtin,
-                                ),
-                                InfoLine(
-                                  label:
-                                      'رقم الكتالوج',
-                                  value: material
-                                          .catalogNumber
-                                          .isEmpty
-                                      ? 'غير موجود'
-                                      : material
-                                          .catalogNumber,
-                                ),
-                                InfoLine(
-                                  label:
-                                      'اسم الجهاز',
-                                  value: material
-                                      .deviceName,
-                                ),
-                                InfoLine(
-                                  label:
-                                      'القسم',
-                                  value: material
-                                      .department,
-                                ),
-                                InfoLine(
-                                  label:
-                                      'عدد العلب',
-                                  value: material
-                                      .boxCount
-                                      .toString(),
-                                ),
-                                InfoLine(
-                                  label:
-                                      'كمية كل علبة',
-                                  value:
-                                      '${formatQuantity(material.quantityPerBox)} '
-                                      '${material.unit}',
-                                ),
-                                InfoLine(
-                                  label:
-                                      'تاريخ الانتهاء',
-                                  value: formatDate(
-                                    material
-                                        .expiryDate,
-                                  ),
-                                ),
-                                InfoLine(
-                                  label:
-                                      'سجل المادة',
-                                  value: material
-                                      .registeredBy,
-                                ),
-                                InfoLine(
-                                  label:
-                                      'تاريخ التسجيل',
-                                  value:
-                                      formatDateTime(
-                                    material
-                                        .registeredAt,
-                                  ),
-                                ),
-                                InfoLine(
-                                  label:
-                                      'آخر مستخدم',
-                                  value: material
-                                      .lastUser,
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                        const SizedBox(
-                          height: 16,
-                        ),
-                        Text(
-                          'سجل الاستخدام',
-                          style: Theme.of(context)
-                              .textTheme
-                              .titleLarge,
-                        ),
-                        const SizedBox(
-                          height: 8,
-                        ),
-                        if (material
-                            .usageHistory.isEmpty)
-                          const Card(
-                            child: Padding(
-                              padding:
-                                  EdgeInsets.all(
-                                16,
-                              ),
-                              child: Text(
-                                'هذه المادة موجودة في المخزون '
-                                'ولكن لم يستخدمها أي موظف حتى الآن.',
-                                textAlign:
-                                    TextAlign.center,
-                              ),
-                            ),
-                          ),
-                        ...material.usageHistory.map(
-                          (UsageRecord record) {
-                            return Padding(
-                              padding:
-                                  const EdgeInsets
-                                      .only(
-                                bottom: 8,
-                              ),
-                              child: Card(
-                                child: ListTile(
-                                  isThreeLine: true,
-                                  leading:
-                                      const CircleAvatar(
-                                    child: Icon(
-                                      Icons.person,
-                                    ),
-                                  ),
-                                  title: Text(
-                                    record
-                                        .employeeName,
-                                  ),
-                                  subtitle: Text(
-                                    'الكمية المستخدمة: '
-                                    '${formatQuantity(record.quantityUsed)} '
-                                    '${material.unit}\n'
-                                    'الكمية قبل الاستخدام: '
-                                    '${formatQuantity(record.quantityBefore)} '
-                                    '${material.unit}\n'
-                                    'الكمية المتبقية: '
-                                    '${formatQuantity(record.quantityAfter)} '
-                                    '${material.unit}\n'
-                                    'التاريخ والوقت: '
-                                    '${formatDateTime(record.createdAt)}'
-                                    '${record.note.isEmpty ? '' : '\nملاحظة: ${record.note}'}',
-                                  ),
-                                ),
-                              ),
-                            );
-                          },
-                        ),
-                        const SizedBox(
-                          height: 90,
-                        ),
-                      ],
-                    ),
-                  );
-                },
-              );
-            }
-          }
-
-          class QuantityBox extends StatelessWidget {
-            const QuantityBox({
-              super.key,
-              required this.title,
-              required this.value,
-            });
-
-            final String title;
-            final String value;
-
-            @override
-            Widget build(BuildContext context) {
-              return Expanded(
-                child: Column(
-                  children: <Widget>[
-                    Text(
-                      title,
-                      style: const TextStyle(
-                        fontWeight:
-                            FontWeight.bold,
-                      ),
-                    ),
-                    const SizedBox(
-                      height: 4,
-                    ),
-                    Text(
-                      value,
-                      textAlign:
-                          TextAlign.center,
-                    ),
-                  ],
-                ),
-              );
-            }
-          }
-
-          class InfoLine extends StatelessWidget {
-            const InfoLine({
-              super.key,
-              required this.label,
-              required this.value,
-            });
-
-            final String label;
-            final String value;
-
-            @override
-            Widget build(BuildContext context) {
-              return Padding(
-                padding:
-                    const EdgeInsets.symmetric(
-                  vertical: 5,
-                ),
-                child: Row(
-                  crossAxisAlignment:
-                      CrossAxisAlignment.start,
-                  children: <Widget>[
-                    SizedBox(
-                      width: 130,
-                      child: Text(
-                        label,
-                        style:
-                            const TextStyle(
-                          fontWeight:
-                              FontWeight.bold,
-                        ),
-                      ),
-                    ),
-                    Expanded(
-                      child: SelectableText(
-                        value,
-                      ),
-                    ),
-                  ],
-                ),
-              );
-            }
-          }
-
-          class InventoryScreen
-              extends StatefulWidget {
-            const InventoryScreen({
-              super.key,
-              required this.store,
-            });
-
-            final AppStore store;
-
-            @override
-            State<InventoryScreen>
-                createState() {
-              return _InventoryScreenState();
-            }
-          }
-
-          class _InventoryScreenState
-              extends State<InventoryScreen> {
-            final TextEditingController
-                searchController =
-                TextEditingController();
-
-            String searchText = '';
-
-            @override
-            void dispose() {
-              searchController.dispose();
-              super.dispose();
-            }
-
-            @override
-            Widget build(BuildContext context) {
-              return AnimatedBuilder(
-                animation: widget.store,
-                builder: (
-                  BuildContext context,
-                  Widget? child,
-                ) {
-                  final String query =
-                      searchText
-                          .trim()
-                          .toLowerCase();
-
-                  final List<MaterialRecord>
-                      filtered =
-                      widget.store.materials.where(
-                    (MaterialRecord material) {
-                      if (query.isEmpty) {
-                        return true;
-                      }
-
-                      return material.name
-                              .toLowerCase()
-                              .contains(query) ||
-                          material.serialNumber
-                              .toLowerCase()
-                              .contains(query) ||
-                          material.lotNumber
-                              .toLowerCase()
-                              .contains(query) ||
-                          material.gtin
-                              .toLowerCase()
-                              .contains(query) ||
-                          normalizeBarcode(
-                            material.barcode,
-                          )
-                              .toLowerCase()
-                              .contains(query);
-                    },
-                  ).toList();
-
-                  return Scaffold(
-                    appBar: AppBar(
-                      title:
-                          const Text('المخزون'),
-                    ),
-                    body: Column(
-                      children: <Widget>[
-                        Padding(
-                          padding:
-                              const EdgeInsets.all(
-                            12,
-                          ),
-                          child: TextField(
-                            controller:
-                                searchController,
-                            onChanged: (
-                              String value,
-                            ) {
-                              setState(() {
-                                searchText =
-                                    value;
-                              });
-                            },
-                            decoration:
-                                const InputDecoration(
-                              labelText:
-                                  'البحث بالاسم أو LOT '
-                                  'أو الرقم التسلسلي أو الباركود',
-                              prefixIcon: Icon(
-                                Icons.search,
-                              ),
-                            ),
-                          ),
-                        ),
-                        Expanded(
-                          child: filtered.isEmpty
-                              ? const Center(
-                                  child: Text(
-                                    'لا توجد مواد مطابقة',
-                                  ),
-                                )
-                              : ListView.separated(
-                                  padding:
-                                      const EdgeInsets
-                                          .fromLTRB(
-                                    12,
-                                    0,
-                                    12,
-                                    12,
-                                  ),
-                                  itemCount:
-                                      filtered.length,
-                                  separatorBuilder: (
-                                    BuildContext context,
-                                    int index,
-                                  ) {
-                                    return const SizedBox(
-                                      height: 8,
-                                    );
-                                  },
-                                  itemBuilder: (
-                                    BuildContext context,
-                                    int index,
-                                  ) {
-                                    final MaterialRecord
-                                        material =
-                                        filtered[index];
-
-                                    return Card(
-                                      child:
-                                          ListTile(
-                                        leading:
-                                            CircleAvatar(
-                                          backgroundColor:
-                                              material
-                                                  .statusColor,
-                                          child:
-                                              const Icon(
-                                            Icons
-                                                .science,
-                                            color:
-                                                Colors.white,
-                                          ),
-                                        ),
-                                        title:
-                                            Text(
-                                          material
-                                              .name,
-                                        ),
-                                        subtitle:
-                                            Text(
-                                          '${material.deviceName} • '
-                                          '${material.department}\n'
-                                          'LOT: '
-                                          '${material.lotNumber.isEmpty ? 'غير موجود' : material.lotNumber}\n'
-                                          'المتبقي: '
-                                          '${formatQuantity(material.remainingQuantity)} '
-                                          '${material.unit}\n'
-                                          'سجلها: '
-                                          '${material.registeredBy}',
-                                        ),
-                                        trailing:
-                                            Text(
-                                          material
-                                              .statusText,
-                                          textAlign:
-                                              TextAlign.center,
-                                          style:
-                                              TextStyle(
-                                            color: material
-                                                .statusColor,
-                                            fontWeight:
-                                                FontWeight.bold,
-                                          ),
-                                        ),
-                                        onTap: () {
-                                          Navigator.of(
-                                            context,
-                                          ).push(
-                                            MaterialPageRoute<
-                                                void>(
-                                              builder: (
-                                                BuildContext
-                                                    context,
-                                              ) {
-                                                return MaterialDetailsScreen(
-                                                  store:
-                                                      widget.store,
-                                                  materialId:
-                                                      material.id,
-                                                );
-                                              },
-                                            ),
-                                          );
-                                        },
-                                      ),
-                                    );
-                                  },
-                                ),
-                        ),
-                      ],
-                    ),
-                  );
-                },
-              );
-            }
-          }
-
-          class UsersScreen extends StatefulWidget {
-            const UsersScreen({
-              super.key,
-              required this.store,
-            });
-
-            final AppStore store;
-
-            @override
-            State<UsersScreen> createState() {
-              return _UsersScreenState();
-            }
-          }
-
-          class _UsersScreenState
-              extends State<UsersScreen> {
-            Future<void> addUser() async {
-              final TextEditingController
-                  nameController =
-                  TextEditingController();
-
-              final TextEditingController
-                  usernameController =
-                  TextEditingController();
-
-              final TextEditingController
-                  passwordController =
-                  TextEditingController(
-                text: '1234',
-              );
-
-              bool isAdmin = false;
-
-              final bool? confirmed =
-                  await showDialog<bool>(
-                context: context,
-                builder: (
-                  BuildContext dialogContext,
-                ) {
-                  return StatefulBuilder(
-                    builder: (
-                      BuildContext context,
-                      void Function(
-                        void Function(),
-                      ) updateDialog,
-                    ) {
-                      return AlertDialog(
-                        title: const Text(
-                          'إضافة مستخدم',
-                        ),
-                        content:
-                            SingleChildScrollView(
-                          child: Column(
-                            mainAxisSize:
-                                MainAxisSize.min,
-                            children: <Widget>[
-                              TextField(
-                                controller:
-                                    nameController,
-                                decoration:
-                                    const InputDecoration(
-                                  labelText:
-                                      'اسم الموظف',
-                                ),
-                              ),
-                              const SizedBox(
-                                height: 10,
-                              ),
-                              TextField(
-                                controller:
-                                    usernameController,
-                                decoration:
-                                    const InputDecoration(
-                                  labelText:
-                                      'اسم المستخدم',
-                                ),
-                              ),
-                              const SizedBox(
-                                height: 10,
-                              ),
-                              TextField(
-                                controller:
-                                    passwordController,
-                                decoration:
-                                    const InputDecoration(
-                                  labelText:
-                                      'كلمة المرور',
-                                ),
-                              ),
-                              SwitchListTile(
-                                title:
-                                    const Text(
-                                  'مستخدم رئيسي',
-                                ),
-                                value:
-                                    isAdmin,
-                                onChanged: (
-                                  bool value,
-                                ) {
-                                  updateDialog(
-                                    () {
-                                      isAdmin =
-                                          value;
-                                    },
-                                  );
-                                },
-                              ),
-                            ],
-                          ),
-                        ),
-                        actions: <Widget>[
-                          TextButton(
-                            onPressed: () {
-                              Navigator.of(
-                                dialogContext,
-                              ).pop(false);
-                            },
-                            child: const Text(
-                              'إلغاء',
-                            ),
-                          ),
-                          FilledButton(
-                            onPressed: () {
-                              Navigator.of(
-                                dialogContext,
-                              ).pop(true);
-                            },
-                            child: const Text(
-                              'إضافة',
-                            ),
-                          ),
-                        ],
-                      );
-                    },
-                  );
-                },
-              );
-
-              if (confirmed == true) {
-                final String name =
-                    nameController.text.trim();
-
-                final String username =
-                    usernameController.text
-                        .trim();
-
-                final String password =
-                    passwordController.text;
-
-                if (name.isEmpty ||
-                    username.isEmpty ||
-                    password.isEmpty) {
-                  if (mounted) {
-                    ScaffoldMessenger.of(
-                      context,
-                    ).showSnackBar(
-                      const SnackBar(
-                        content: Text(
-                          'أكمل جميع البيانات',
-                        ),
-                      ),
-                    );
-                  }
-                } else {
-                  final String? error =
-                      await widget.store.addUser(
-                    name: name,
-                    username: username,
-                    password: password,
-                    isAdmin: isAdmin,
-                  );
-
-                  if (error != null &&
-                      mounted) {
-                    ScaffoldMessenger.of(
-                      context,
-                    ).showSnackBar(
-                      SnackBar(
-                        content: Text(error),
-                      ),
-                    );
-                  }
-                }
-              }
-
-              nameController.dispose();
-              usernameController.dispose();
-              passwordController.dispose();
-            }
-
-            @override
-            Widget build(BuildContext context) {
-              return AnimatedBuilder(
-                animation: widget.store,
-                builder: (
-                  BuildContext context,
-                  Widget? child,
-                ) {
-                  return Scaffold(
-                    appBar: AppBar(
-                      title: const Text(
-                        'إدارة المستخدمين',
-                      ),
-                    ),
-                    floatingActionButton:
-                        FloatingActionButton
-                            .extended(
-                      onPressed: addUser,
-                      icon: const Icon(
-                        Icons.person_add,
-                      ),
-                      label: const Text(
-                        'إضافة مستخدم',
-                      ),
-                    ),
-                    body: ListView.separated(
-                      padding:
-                          const EdgeInsets.all(
-                        12,
-                      ),
-                      itemCount:
-                          widget.store.users.length,
-                      separatorBuilder: (
-                        BuildContext context,
-                        int index,
-                      ) {
-                        return const SizedBox(
-                          height: 8,
-                        );
-                      },
-                      itemBuilder: (
-                        BuildContext context,
-                        int index,
-                      ) {
-                        final UserAccount user =
-                            widget.store.users[
-                                index];
-
-                        return Card(
-                          child: ListTile(
-                            leading: Icon(
-                              user.isAdmin
-                                  ? Icons
-                                      .admin_panel_settings
-                                  : Icons.person,
-                            ),
-                            title:
-                                Text(user.name),
-                            subtitle: Text(
-                              '${user.username} • '
-                              '${user.isAdmin ? 'مستخدم رئيسي' : 'مستخدم عادي'}',
-                            ),
-                            trailing: Switch(
-                              value:
-                                  user.isActive,
-                              onChanged: user.id ==
-                                      widget
-                                          .store
-                                          .currentUser
-                                          ?.id
-                                  ? null
-                                  : (
-                                      bool value,
-                                    ) async {
-                                      user.isActive =
-                                          value;
-
-                                      await widget
-                                          .store
-                                          .saveUsers();
-                                    },
-                            ),
-                          ),
-                        );
-                      },
-                    ),
-                  );
-                },
-              );
-            }
-          }
-          DART
+          grep -n \
+            "version: 3.1.2+13" \
+            smartchem_app/pubspec.yaml
+
+          grep -n \
+            "الإصدار 3.1.2" \
+            smartchem_app/lib/main.dart
+
+          grep -n \
+            "initialValue: materialType" \
+            smartchem_app/lib/main.dart
+
+          grep -n \
+            "initialValue: unit" \
+            smartchem_app/lib/main.dart
+
+          if grep -R \
+            "MyApp" \
+            smartchem_app/test \
+            2>/dev/null; then
+
+            echo "Old MyApp test still exists"
+            exit 1
+          fi
+
+          echo "Source corrections verified"
 
       - name: Configure Android
         working-directory: smartchem_app
@@ -3603,11 +263,11 @@ jobs:
           from pathlib import Path
           import re
 
-          manifest = Path(
+          manifest_path = Path(
               "android/app/src/main/AndroidManifest.xml"
           )
 
-          manifest_text = manifest.read_text(
+          manifest = manifest_path.read_text(
               encoding="utf-8"
           )
 
@@ -3622,64 +282,128 @@ jobs:
               'android:required="false" />'
           )
 
-          if camera_permission not in manifest_text:
-              first_tag_end = manifest_text.find(">")
+          first_tag_end = manifest.find(">")
 
-              manifest_text = (
-                  manifest_text[:first_tag_end + 1]
-                  + "\n    "
-                  + camera_permission
-                  + "\n    "
-                  + camera_feature
-                  + manifest_text[first_tag_end + 1:]
+          if first_tag_end < 0:
+              raise SystemExit(
+                  "Invalid AndroidManifest.xml"
               )
 
-          manifest_text = manifest_text.replace(
-              'android:label="smartchem_track"',
-              'android:label="SmartChem Track"'
+          additions = []
+
+          if camera_permission not in manifest:
+              additions.append(
+                  camera_permission
+              )
+
+          if camera_feature not in manifest:
+              additions.append(
+                  camera_feature
+              )
+
+          if additions:
+              manifest = (
+                  manifest[:first_tag_end + 1]
+                  + "\n    "
+                  + "\n    ".join(additions)
+                  + manifest[first_tag_end + 1:]
+              )
+
+          manifest = re.sub(
+              r'android:label="[^"]*"',
+              'android:label="SmartChem Track"',
+              manifest,
+              count=1,
           )
 
-          manifest.write_text(
-              manifest_text,
-              encoding="utf-8"
+          manifest_path.write_text(
+              manifest,
+              encoding="utf-8",
           )
 
-          gradle = Path(
+          gradle_kts = Path(
               "android/app/build.gradle.kts"
           )
 
-          gradle_text = gradle.read_text(
-              encoding="utf-8"
+          gradle_groovy = Path(
+              "android/app/build.gradle"
           )
 
-          gradle_text = re.sub(
-              r'applicationId\s*=\s*"[^"]+"',
-              'applicationId = "om.smartchem.track.v310"',
-              gradle_text,
-              count=1
+          if gradle_kts.exists():
+
+              gradle = gradle_kts.read_text(
+                  encoding="utf-8"
+              )
+
+              gradle = re.sub(
+                  r'applicationId\s*=\s*"[^"]+"',
+                  'applicationId = '
+                  '"om.smartchem.track.v310"',
+                  gradle,
+                  count=1,
+              )
+
+              gradle = re.sub(
+                  r'minSdk\s*=\s*[^\n]+',
+                  "minSdk = 23",
+                  gradle,
+                  count=1,
+              )
+
+              gradle_kts.write_text(
+                  gradle,
+                  encoding="utf-8",
+              )
+
+              print(
+                  "Configured build.gradle.kts"
+              )
+
+          elif gradle_groovy.exists():
+
+              gradle = gradle_groovy.read_text(
+                  encoding="utf-8"
+              )
+
+              gradle = re.sub(
+                  r'applicationId\s+["\'][^"\']+["\']',
+                  'applicationId '
+                  '"om.smartchem.track.v310"',
+                  gradle,
+                  count=1,
+              )
+
+              gradle = re.sub(
+                  r'minSdkVersion\s+[^\n]+',
+                  "minSdkVersion 23",
+                  gradle,
+                  count=1,
+              )
+
+              gradle_groovy.write_text(
+                  gradle,
+                  encoding="utf-8",
+              )
+
+              print(
+                  "Configured build.gradle"
+              )
+
+          else:
+              raise SystemExit(
+                  "Android Gradle application file was not found"
+              )
+
+          print(
+              "Final AndroidManifest.xml:"
           )
 
-          gradle_text = re.sub(
-              r'minSdk\s*=\s*[^\n]+',
-              'minSdk = 23',
-              gradle_text,
-              count=1
-          )
-
-          gradle.write_text(
-              gradle_text,
-              encoding="utf-8"
-          )
-
-          print("AndroidManifest.xml:")
-          print(manifest_text)
-
-          print("build.gradle.kts:")
-          print(gradle_text)
+          print(manifest)
           PY
 
       - name: Install Flutter packages
         working-directory: smartchem_app
+        shell: bash
         run: |
           flutter clean
           flutter pub get
@@ -3687,44 +411,130 @@ jobs:
 
       - name: Analyze source
         working-directory: smartchem_app
+        shell: bash
         run: |
+          set +e
+          set -o pipefail
+
           flutter analyze \
             --no-fatal-warnings \
-            --no-fatal-infos
+            --no-fatal-infos \
+            2>&1 | tee ../smartchem-analyze.log
+
+          ANALYZE_STATUS=${PIPESTATUS[0]}
+
+          echo "$ANALYZE_STATUS" \
+            > ../smartchem-analyze-status.txt
+
+          echo "Analyze status: $ANALYZE_STATUS"
+
+          exit 0
+
+      - name: Upload analysis log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: SmartChemTrack-v3.1.2-Analyze-Log
+          path: |
+            smartchem-analyze.log
+            smartchem-analyze-status.txt
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Check analysis result
+        shell: bash
+        run: |
+          ANALYZE_STATUS=$(
+            cat smartchem-analyze-status.txt
+          )
+
+          if [ "$ANALYZE_STATUS" -ne 0 ]; then
+            echo "Flutter analysis failed"
+
+            cat smartchem-analyze.log
+
+            exit "$ANALYZE_STATUS"
+          fi
+
+          echo "Flutter analysis completed successfully"
 
       - name: Build release APK
         working-directory: smartchem_app
         shell: bash
         run: |
+          set +e
           set -o pipefail
 
           flutter build apk \
             --release \
-            --build-name=3.1.0 \
-            --build-number=11 \
+            --build-name=3.1.2 \
+            --build-number=13 \
             2>&1 | tee ../smartchem-build.log
+
+          BUILD_STATUS=${PIPESTATUS[0]}
+
+          echo "$BUILD_STATUS" \
+            > ../smartchem-build-status.txt
+
+          tail -n 500 \
+            ../smartchem-build.log \
+            > ../smartchem-build-tail.log
+
+          echo "Build status: $BUILD_STATUS"
+
+          exit 0
 
       - name: Upload build log
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: SmartChemTrack-v3.1.0-Build-Log
-          path: smartchem-build.log
+          name: SmartChemTrack-v3.1.2-Build-Log
+          path: |
+            smartchem-build.log
+            smartchem-build-tail.log
+            smartchem-build-status.txt
           retention-days: 30
           if-no-files-found: warn
 
+      - name: Check APK build result
+        shell: bash
+        run: |
+          BUILD_STATUS=$(
+            cat smartchem-build-status.txt
+          )
+
+          if [ "$BUILD_STATUS" -ne 0 ]; then
+            echo "SmartChem APK build failed"
+
+            cat smartchem-build-tail.log
+
+            exit "$BUILD_STATUS"
+          fi
+
+          APK_PATH="smartchem_app/build/app/outputs/flutter-apk/app-release.apk"
+
+          if [ ! -f "$APK_PATH" ]; then
+            echo "Build finished without creating an APK"
+            exit 1
+          fi
+
+          echo "APK created successfully"
+
+          ls -lh "$APK_PATH"
+
       - name: Copy APK
+        shell: bash
         run: |
           cp \
             smartchem_app/build/app/outputs/flutter-apk/app-release.apk \
-            SmartChemTrack-v3.1.0.apk
+            SmartChemTrack-v3.1.2.apk
 
-          ls -lh SmartChemTrack-v3.1.0.apk
+          ls -lh SmartChemTrack-v3.1.2.apk
 
-      - name: Upload APK
+      - name: Upload SmartChem APK
         uses: actions/upload-artifact@v4
         with:
-          name: SmartChemTrack-v3.1.0-APK
-          path: SmartChemTrack-v3.1.0.apk
+          name: SmartChemTrack-v3.1.2-APK
+          path: SmartChemTrack-v3.1.2.apk
           retention-days: 30
           if-no-files-found: error
