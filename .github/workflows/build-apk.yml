@@ -1,4 +1,4 @@
-name: Build SmartChem Track v4.0.2 Stable
+name: Build SmartChem Track v4.0.3 Fixed
 
 on:
   workflow_dispatch:
@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build SmartChem Track v4.0.2 APK
+    name: Build SmartChem Track v4.0.3 APK
     runs-on: ubuntu-24.04
     timeout-minutes: 90
 
@@ -25,17 +25,17 @@ jobs:
         with:
           fetch-depth: 0
 
+      # لا تستخدم cache: gradle هنا؛
+      # لأن مشروع Android لم يتم إنشاؤه بعد.
       - name: Configure Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
-          cache: gradle
 
-      - name: Install fixed Flutter version
+      - name: Install Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: "3.44.6"
           channel: stable
           cache: true
 
@@ -53,38 +53,11 @@ jobs:
           echo "========== Java =========="
           java -version
 
-          echo "========== Android SDK =========="
+          echo "========== Android =========="
           echo "ANDROID_HOME=$ANDROID_HOME"
           echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
 
           flutter doctor -v
-
-      - name: Install Android SDK 36
-        shell: bash
-        run: |
-          set -e
-
-          SDKMANAGER=""
-
-          if command -v sdkmanager >/dev/null 2>&1; then
-            SDKMANAGER="$(command -v sdkmanager)"
-          elif [ -x "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" ]; then
-            SDKMANAGER="${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager"
-          elif [ -x "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" ]; then
-            SDKMANAGER="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
-          fi
-
-          if [ -z "$SDKMANAGER" ]; then
-            echo "sdkmanager was not found"
-            exit 1
-          fi
-
-          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
-
-          "$SDKMANAGER" \
-            "platform-tools" \
-            "platforms;android-36" \
-            "build-tools;36.0.0"
 
       - name: Create clean Flutter project
         shell: bash
@@ -106,13 +79,13 @@ jobs:
 
           echo "Clean Flutter project created"
 
-      - name: Recover complete SmartChem v4 application
+      - name: Recover complete SmartChem v4 source
         shell: bash
         run: |
           set -e
 
           SOURCE_COMMIT="9f81a3414472d86e3cb0aa820e8863967994d03c"
-          SOURCE_FILE="/tmp/smartchem-original-v4.yml"
+          SOURCE_WORKFLOW="/tmp/smartchem-v4-original.yml"
 
           if ! git cat-file -e "${SOURCE_COMMIT}^{commit}" 2>/dev/null; then
             git fetch origin "${SOURCE_COMMIT}"
@@ -120,16 +93,16 @@ jobs:
 
           git show \
             "${SOURCE_COMMIT}:.github/workflows/build-apk.yml" \
-            > "$SOURCE_FILE"
+            > "${SOURCE_WORKFLOW}"
 
           python3 - <<'PY'
           from pathlib import Path
 
-          source_file = Path(
-              "/tmp/smartchem-original-v4.yml"
+          source_path = Path(
+              "/tmp/smartchem-v4-original.yml"
           )
 
-          source_lines = source_file.read_text(
+          source_lines = source_path.read_text(
               encoding="utf-8"
           ).splitlines()
 
@@ -165,7 +138,7 @@ jobs:
 
               if not output_lines:
                   raise SystemExit(
-                      f"No data extracted for: "
+                      f"No content extracted for: "
                       f"{destination_path}"
                   )
 
@@ -269,9 +242,9 @@ jobs:
             "class UsersScreen" \
             smartchem_v4/lib/main.dart
 
-          echo "Complete SmartChem source recovered successfully"
+          echo "Complete SmartChem v4 source recovered"
 
-      - name: Apply stable dependencies and source fixes
+      - name: Apply SmartChem v4.0.3 corrections
         shell: bash
         run: |
           set -e
@@ -312,37 +285,28 @@ jobs:
               encoding="utf-8"
           )
 
-          # Application version.
+          # إصدار التطبيق.
           pubspec = re.sub(
               r"version:\s*4\.0\.0\+1",
-              "version: 4.0.2+3",
+              "version: 4.0.3+4",
               pubspec,
               count=1,
           )
 
           arabic = arabic.replace(
               "الإصدار 4.0.0",
-              "الإصدار 4.0.2",
+              "الإصدار 4.0.3",
           )
 
           english = english.replace(
               "Version 4.0.0",
-              "Version 4.0.2",
+              "Version 4.0.3",
           )
 
-          # mobile_scanner 7.x requires Dart 3.7 or newer.
-          pubspec = re.sub(
-              r'sdk:\s*">=3\.6\.0 <4\.0\.0"',
-              'sdk: ">=3.7.0 <4.0.0"',
-              pubspec,
-              count=1,
-          )
-
-          # Pin every package. Do not use ^ because an automatic
-          # package update can break Android compilation later.
+          # تثبيت الإصدارات لمنع تحديث الحزم تلقائيًا.
           pinned_dependencies = {
               "intl": "0.20.2",
-              "mobile_scanner": "7.1.4",
+              "mobile_scanner": "7.3.0",
               "sqflite": "2.4.2",
               "path": "1.9.1",
               "crypto": "3.0.6",
@@ -357,6 +321,7 @@ jobs:
           }
 
           for package, version in pinned_dependencies.items():
+
               pattern = (
                   rf"(?m)^(\s*){re.escape(package)}:"
                   rf"\s*[^\n]+$"
@@ -378,13 +343,13 @@ jobs:
                       f"Dependency not found: {package}"
                   )
 
-          # PDF 3.12 uses TableHelper.
+          # إصلاح واجهة إنشاء جدول PDF.
           main = main.replace(
               "pw.Table.fromTextArray(",
               "pw.TableHelper.fromTextArray(",
           )
 
-          # Replace deprecated Share.shareXFiles API.
+          # إصلاح واجهة مشاركة ملفات Excel.
           share_pattern = re.compile(
               r"(?P<indent>^[ \t]*)"
               r"await Share\.shareXFiles\("
@@ -421,7 +386,7 @@ jobs:
           )
 
           print(
-              f"Share calls updated: {share_count}"
+              f"Updated Share calls: {share_count}"
           )
 
           if share_count < 2:
@@ -429,9 +394,7 @@ jobs:
                   "Expected two Share API replacements"
               )
 
-          # Enable tap-to-focus and let the screen manage camera
-          # lifecycle, preventing two lifecycle managers from
-          # starting or stopping the camera together.
+          # إضافة الضغط للتركيز ومنع تعارض دورة حياة الكاميرا.
           scanner_pattern = re.compile(
               r"MobileScanner\(\s*"
               r"controller:\s*scanner,\s*"
@@ -458,15 +421,14 @@ jobs:
                   "MobileScanner widget was not updated"
               )
 
-          # Starting the camera inside initState can happen before
-          # MobileScanner is attached. Start it after the first frame.
-          old_start = (
+          # تشغيل الكاميرا بعد ظهور واجهة الماسح.
+          original_start = (
               "              unawaited(scanner.start());\n"
               "\n"
               "              manualTimer = Timer("
           )
 
-          new_start = (
+          delayed_start = (
               "              WidgetsBinding.instance\n"
               "                  .addPostFrameCallback((_) {\n"
               "                if (mounted) {\n"
@@ -477,16 +439,12 @@ jobs:
               "              manualTimer = Timer("
           )
 
-          if old_start not in main:
-              raise SystemExit(
-                  "Initial scanner start call was not found"
+          if original_start in main:
+              main = main.replace(
+                  original_start,
+                  delayed_start,
+                  1,
               )
-
-          main = main.replace(
-              old_start,
-              new_start,
-              1,
-          )
 
           pubspec_path.write_text(
               pubspec,
@@ -509,7 +467,7 @@ jobs:
           )
 
           print(
-              "SmartChem v4.0.2 corrections applied"
+              "SmartChem v4.0.3 corrections applied"
           )
           PY
 
@@ -617,7 +575,7 @@ jobs:
 
               gradle = re.sub(
                   r'compileSdk\s*=\s*[^\n]+',
-                  "compileSdk = 36",
+                  "compileSdk = 35",
                   gradle,
                   count=1,
               )
@@ -647,8 +605,14 @@ jobs:
               )
 
               gradle = gradle.replace(
-                  'jvmTarget = JavaVersion.VERSION_11.toString()',
-                  'jvmTarget = JavaVersion.VERSION_17.toString()',
+                  (
+                      "jvmTarget = "
+                      "JavaVersion.VERSION_11.toString()"
+                  ),
+                  (
+                      "jvmTarget = "
+                      "JavaVersion.VERSION_17.toString()"
+                  ),
               )
 
               gradle_kts.write_text(
@@ -675,7 +639,7 @@ jobs:
 
               gradle = re.sub(
                   r'compileSdkVersion\s+[^\n]+',
-                  "compileSdkVersion 36",
+                  "compileSdkVersion 35",
                   gradle,
                   count=1,
               )
@@ -715,7 +679,7 @@ jobs:
 
           else:
               raise SystemExit(
-                  "Android app Gradle file was not found"
+                  "Android Gradle application file not found"
               )
 
           properties_path = Path(
@@ -740,20 +704,23 @@ jobs:
           }
 
           for key, value in required_properties.items():
+
               expression = re.compile(
                   rf"(?m)^{re.escape(key)}=.*$"
               )
 
-              new_line = f"{key}={value}"
+              replacement = (
+                  f"{key}={value}"
+              )
 
               if expression.search(properties):
                   properties = expression.sub(
-                      new_line,
+                      replacement,
                       properties,
                   )
               else:
                   properties += (
-                      "\n" + new_line
+                      "\n" + replacement
                   )
 
           properties_path.write_text(
@@ -765,24 +732,40 @@ jobs:
               f"Application ID: {application_id}"
           )
 
-          print(
-              "compileSdk: 36"
-          )
-
-          print(
-              "targetSdk: 35"
-          )
-
-          print(
-              "minSdk: 23"
-          )
-
-          print(
-              "Java: 17"
-          )
+          print("compileSdk: 35")
+          print("targetSdk: 35")
+          print("minSdk: 23")
+          print("Java: 17")
           PY
 
-      - name: Clean Gradle and Flutter caches
+      - name: Install Android SDK 35
+        shell: bash
+        run: |
+          set -e
+
+          SDKMANAGER=""
+
+          if command -v sdkmanager >/dev/null 2>&1; then
+            SDKMANAGER="$(command -v sdkmanager)"
+          elif [ -x "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" ]; then
+            SDKMANAGER="${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager"
+          elif [ -x "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" ]; then
+            SDKMANAGER="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
+          fi
+
+          if [ -z "$SDKMANAGER" ]; then
+            echo "sdkmanager was not found"
+            exit 1
+          fi
+
+          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
+
+          "$SDKMANAGER" \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
+
+      - name: Clean project
         working-directory: smartchem_v4
         shell: bash
         run: |
@@ -793,9 +776,9 @@ jobs:
           rm -rf android/.gradle
           rm -rf build
 
-          echo "Local build caches removed"
+          echo "Project caches removed"
 
-      - name: Install exact Flutter packages
+      - name: Install Flutter packages
         working-directory: smartchem_v4
         shell: bash
         run: |
@@ -804,15 +787,12 @@ jobs:
           flutter pub get
           flutter gen-l10n
 
-          flutter pub deps \
-            > ../smartchem-dependencies.txt
-
-          cp pubspec.lock \
+          cp \
+            pubspec.lock \
             ../smartchem-pubspec-lock.txt
 
-          grep -A 4 \
-            "mobile_scanner:" \
-            pubspec.lock || true
+          flutter pub deps \
+            > ../smartchem-dependencies.txt
 
       - name: Format source
         working-directory: smartchem_v4
@@ -822,21 +802,17 @@ jobs:
 
           dart format lib test
 
-      - name: Verify complete corrected source
+      - name: Verify generated project
         shell: bash
         run: |
           set -e
 
           grep -n \
-            "version: 4.0.2+3" \
+            "version: 4.0.3+4" \
             smartchem_v4/pubspec.yaml
 
           grep -n \
-            "mobile_scanner: 7.1.4" \
-            smartchem_v4/pubspec.yaml
-
-          grep -n \
-            "share_plus: 11.1.0" \
+            "mobile_scanner: 7.3.0" \
             smartchem_v4/pubspec.yaml
 
           grep -n \
@@ -855,20 +831,11 @@ jobs:
             "useAppLifecycleState: false" \
             smartchem_v4/lib/main.dart
 
-          grep -n \
-            "addPostFrameCallback" \
-            smartchem_v4/lib/main.dart
-
-          grep -n \
-            "om.smartchem.track.production" \
-            smartchem_v4/android/app/build.gradle.kts \
-            2>/dev/null || true
-
           if grep -n \
             "Share.shareXFiles" \
             smartchem_v4/lib/main.dart; then
 
-            echo "Deprecated Share API still exists"
+            echo "Old Share API still exists"
             exit 1
           fi
 
@@ -876,13 +843,13 @@ jobs:
             "pw.Table.fromTextArray" \
             smartchem_v4/lib/main.dart; then
 
-            echo "Deprecated PDF table API still exists"
+            echo "Old PDF Table API still exists"
             exit 1
           fi
 
-          echo "All source checks passed"
+          echo "Generated project verification completed"
 
-      - name: Analyze Flutter source
+      - name: Analyze source
         working-directory: smartchem_v4
         shell: bash
         run: |
@@ -890,8 +857,8 @@ jobs:
           set -o pipefail
 
           flutter analyze \
-            --no-fatal-warnings \
             --no-fatal-infos \
+            --no-fatal-warnings \
             2>&1 | tee ../smartchem-analyze.log
 
           ANALYZE_STATUS=${PIPESTATUS[0]}
@@ -901,7 +868,7 @@ jobs:
 
           exit 0
 
-      - name: Check analysis
+      - name: Check analysis result
         shell: bash
         run: |
           set -e
@@ -911,14 +878,14 @@ jobs:
           )
 
           if [ "$ANALYZE_STATUS" -ne 0 ]; then
-            echo "Flutter analysis failed"
+            echo "Flutter analyze failed"
             cat smartchem-analyze.log
             exit "$ANALYZE_STATUS"
           fi
 
-          echo "Flutter analysis passed"
+          echo "Flutter analyze passed"
 
-      - name: Run Flutter tests
+      - name: Run tests
         working-directory: smartchem_v4
         shell: bash
         run: |
@@ -936,7 +903,7 @@ jobs:
 
           exit 0
 
-      - name: Check tests
+      - name: Check test result
         shell: bash
         run: |
           set -e
@@ -953,13 +920,13 @@ jobs:
 
           echo "Flutter tests passed"
 
-      - name: Show final Android configuration
+      - name: Show Android configuration
         working-directory: smartchem_v4
         shell: bash
         run: |
           set -e
 
-          echo "========== app Gradle =========="
+          echo "========== APP GRADLE =========="
 
           if [ -f android/app/build.gradle.kts ]; then
             cat android/app/build.gradle.kts
@@ -967,7 +934,7 @@ jobs:
             cat android/app/build.gradle
           fi
 
-          echo "========== settings Gradle =========="
+          echo "========== SETTINGS GRADLE =========="
 
           if [ -f android/settings.gradle.kts ]; then
             cat android/settings.gradle.kts
@@ -975,21 +942,21 @@ jobs:
             cat android/settings.gradle
           fi
 
-          echo "========== Gradle wrapper =========="
+          echo "========== GRADLE WRAPPER =========="
 
           cat \
             android/gradle/wrapper/gradle-wrapper.properties
 
-          echo "========== Gradle properties =========="
+          echo "========== GRADLE PROPERTIES =========="
 
           cat android/gradle.properties
 
-          echo "========== Android manifest =========="
+          echo "========== MANIFEST =========="
 
           cat \
             android/app/src/main/AndroidManifest.xml
 
-      - name: Build SmartChem test APK
+      - name: Build SmartChem APK
         working-directory: smartchem_v4
         shell: bash
         run: |
@@ -999,8 +966,8 @@ jobs:
           flutter build apk \
             --debug \
             --no-pub \
-            --build-name=4.0.2 \
-            --build-number=3 \
+            --build-name=4.0.3 \
+            --build-number=4 \
             -v \
             2>&1 | tee ../smartchem-build.log
 
@@ -1009,7 +976,7 @@ jobs:
           echo "$BUILD_STATUS" \
             > ../smartchem-build-status.txt
 
-          tail -n 1000 \
+          tail -n 1200 \
             ../smartchem-build.log \
             > ../smartchem-build-tail.log
 
@@ -1017,11 +984,11 @@ jobs:
 
           exit 0
 
-      - name: Upload diagnostic files
+      - name: Upload diagnostic logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: SmartChemTrack-v4.0.2-Diagnostic-Logs
+          name: SmartChemTrack-v4.0.3-Diagnostic-Logs
           path: |
             smartchem-analyze.log
             smartchem-analyze-status.txt
@@ -1057,7 +1024,7 @@ jobs:
           APK_PATH="smartchem_v4/build/app/outputs/flutter-apk/app-debug.apk"
 
           if [ ! -f "$APK_PATH" ]; then
-            echo "Build returned success but APK was not found"
+            echo "APK was not created"
             exit 1
           fi
 
@@ -1071,40 +1038,38 @@ jobs:
 
           cp \
             smartchem_v4/build/app/outputs/flutter-apk/app-debug.apk \
-            SmartChemTrack-v4.0.2-TEST.apk
+            SmartChemTrack-v4.0.3-TEST.apk
 
           sha256sum \
-            SmartChemTrack-v4.0.2-TEST.apk \
-            > SmartChemTrack-v4.0.2-SHA256.txt
+            SmartChemTrack-v4.0.3-TEST.apk \
+            > SmartChemTrack-v4.0.3-SHA256.txt
 
-          cat > SmartChemTrack-v4.0.2-BUILD-INFO.txt <<'INFO'
+          cat > SmartChemTrack-v4.0.3-BUILD-INFO.txt <<'INFO'
           SmartChem Track
-          Version: 4.0.2
-          Build number: 3
+          Version: 4.0.3
+          Build number: 4
           Application ID: om.smartchem.track.production
           Build type: Debug test APK
-          Flutter: 3.44.6
           Java: 17
-          Android compile SDK: 36
+          Android compile SDK: 35
           Android target SDK: 35
           Android minimum SDK: 23
-          Scanner: mobile_scanner 7.1.4
-          Scanner engine on Android: CameraX and Google ML Kit
+          Scanner: mobile_scanner 7.3.0
           INFO
 
           ls -lh \
-            SmartChemTrack-v4.0.2-TEST.apk
+            SmartChemTrack-v4.0.3-TEST.apk
 
           cat \
-            SmartChemTrack-v4.0.2-SHA256.txt
+            SmartChemTrack-v4.0.3-SHA256.txt
 
       - name: Upload SmartChem APK
         uses: actions/upload-artifact@v4
         with:
-          name: SmartChemTrack-v4.0.2-TEST-APK
+          name: SmartChemTrack-v4.0.3-TEST-APK
           path: |
-            SmartChemTrack-v4.0.2-TEST.apk
-            SmartChemTrack-v4.0.2-SHA256.txt
-            SmartChemTrack-v4.0.2-BUILD-INFO.txt
+            SmartChemTrack-v4.0.3-TEST.apk
+            SmartChemTrack-v4.0.3-SHA256.txt
+            SmartChemTrack-v4.0.3-BUILD-INFO.txt
           retention-days: 30
           if-no-files-found: error
