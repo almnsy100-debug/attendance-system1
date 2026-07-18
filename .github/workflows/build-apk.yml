@@ -1,4 +1,4 @@
-name: Build SmartChem Track v4.0.7
+name: Build SmartChem Track v4.0.8
 
 on:
   workflow_dispatch:
@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: smartchem-v4-apk
@@ -15,7 +16,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build SmartChem Track v4.0.7 APK
+    name: Build SmartChem Track v4.0.8 APK
     runs-on: ubuntu-24.04
     timeout-minutes: 90
 
@@ -31,13 +32,14 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Install Flutter
+      - name: Install Flutter 3.44.6
         uses: subosito/flutter-action@v2
         with:
+          flutter-version: "3.44.6"
           channel: stable
           cache: true
 
-      - name: Show build environment
+      - name: Show environment
         shell: bash
         run: |
           set -e
@@ -57,7 +59,7 @@ jobs:
 
           flutter doctor -v
 
-      - name: Install Android SDK and NDK
+      - name: Install Android SDK 36 and NDK 28
         shell: bash
         run: |
           set -e
@@ -83,16 +85,17 @@ jobs:
             "platform-tools" \
             "platforms;android-36" \
             "build-tools;36.0.0" \
-            "ndk;27.0.12077973"
+            "ndk;28.2.13676358"
 
-          echo "Android SDK 36 and NDK installed"
+          echo "Android SDK and NDK installed"
 
-      - name: Create clean Flutter project
+      - name: Create clean Flutter Android project
         shell: bash
         run: |
           set -e
 
           rm -rf smartchem_v4
+          rm -rf recovered_source
 
           flutter create smartchem_v4 \
             --platforms=android \
@@ -100,148 +103,99 @@ jobs:
             --project-name production
 
           rm -rf smartchem_v4/test
-          rm -f smartchem_v4/analysis_options.yaml
-
-          mkdir -p smartchem_v4/lib/l10n
           mkdir -p smartchem_v4/test
+          mkdir -p smartchem_v4/lib/l10n
 
           echo "Clean Flutter project created"
 
-      - name: Recover complete SmartChem application
+      - name: Download generated v4.0.7 source
+        uses: actions/download-artifact@v5
+        with:
+          name: SmartChemTrack-v4.0.7-Diagnostic-Logs
+          path: recovered_source
+          repository: ${{ github.repository }}
+          run-id: 29660217211
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Restore SmartChem source files
         shell: bash
         run: |
           set -e
 
-          SOURCE_COMMIT="9f81a3414472d86e3cb0aa820e8863967994d03c"
-          SOURCE_WORKFLOW="/tmp/smartchem-v4-original.yml"
-
-          if ! git cat-file -e "${SOURCE_COMMIT}^{commit}" 2>/dev/null; then
-            git fetch origin "${SOURCE_COMMIT}"
-          fi
-
-          git show \
-            "${SOURCE_COMMIT}:.github/workflows/build-apk.yml" \
-            > "${SOURCE_WORKFLOW}"
+          echo "Downloaded artifact files:"
+          find recovered_source \
+            -maxdepth 8 \
+            -type f \
+            -print
 
           python3 - <<'PY'
           from pathlib import Path
+          import shutil
 
-          source_path = Path(
-              "/tmp/smartchem-v4-original.yml"
+          recovered = Path("recovered_source")
+          project = Path("smartchem_v4")
+
+          main_files = list(
+              recovered.rglob("smartchem_v4/lib/main.dart")
           )
 
-          source_lines = source_path.read_text(
-              encoding="utf-8"
-          ).splitlines()
+          if not main_files:
+              main_files = list(
+                  recovered.rglob("lib/main.dart")
+              )
 
-          def extract_block(
-              start_marker: str,
-              end_marker: str,
-              destination_path: str,
-          ) -> None:
-              collecting = False
-              end_found = False
-              output_lines: list[str] = []
+          if not main_files:
+              raise SystemExit(
+                  "Generated SmartChem main.dart was not found"
+              )
 
-              for line in source_lines:
-                  if not collecting:
-                      if start_marker in line:
-                          collecting = True
-                      continue
+          main_file = main_files[0]
 
-                  if line.strip() == end_marker:
-                      end_found = True
-                      break
+          if main_file.parent.name != "lib":
+              raise SystemExit(
+                  f"Unexpected main.dart location: {main_file}"
+              )
 
-                  if line.startswith("          "):
-                      line = line[10:]
+          source_root = main_file.parent.parent
 
-                  output_lines.append(line)
+          print(
+              f"Recovered source root: {source_root}"
+          )
 
-              if not collecting:
+          required_files = [
+              "pubspec.yaml",
+              "l10n.yaml",
+              "lib/main.dart",
+              "lib/l10n/app_ar.arb",
+              "lib/l10n/app_en.arb",
+              "test/gs1_test.dart",
+          ]
+
+          for relative in required_files:
+              source = source_root / relative
+              destination = project / relative
+
+              if not source.exists():
                   raise SystemExit(
-                      f"Start marker not found: {start_marker}"
+                      f"Missing recovered file: {source}"
                   )
-
-              if not end_found:
-                  raise SystemExit(
-                      f"End marker not found: {end_marker}"
-                  )
-
-              if not output_lines:
-                  raise SystemExit(
-                      f"No source extracted for: {destination_path}"
-                  )
-
-              destination = Path(destination_path)
 
               destination.parent.mkdir(
                   parents=True,
                   exist_ok=True,
               )
 
-              destination.write_text(
-                  "\n".join(output_lines) + "\n",
-                  encoding="utf-8",
+              shutil.copy2(
+                  source,
+                  destination,
               )
 
               print(
-                  f"Recovered {destination_path}: "
-                  f"{len(output_lines)} lines"
-              )
-
-          blocks = [
-              (
-                  "cat > smartchem_v4/pubspec.yaml "
-                  "<<'PUBSPEC'",
-                  "PUBSPEC",
-                  "smartchem_v4/pubspec.yaml",
-              ),
-              (
-                  "cat > smartchem_v4/l10n.yaml "
-                  "<<'L10N'",
-                  "L10N",
-                  "smartchem_v4/l10n.yaml",
-              ),
-              (
-                  "cat > "
-                  "smartchem_v4/lib/l10n/app_ar.arb "
-                  "<<'AR'",
-                  "AR",
-                  "smartchem_v4/lib/l10n/app_ar.arb",
-              ),
-              (
-                  "cat > "
-                  "smartchem_v4/lib/l10n/app_en.arb "
-                  "<<'EN'",
-                  "EN",
-                  "smartchem_v4/lib/l10n/app_en.arb",
-              ),
-              (
-                  "cat > smartchem_v4/lib/main.dart "
-                  "<<'DART'",
-                  "DART",
-                  "smartchem_v4/lib/main.dart",
-              ),
-              (
-                  "cat > "
-                  "smartchem_v4/test/gs1_test.dart "
-                  "<<'TEST'",
-                  "TEST",
-                  "smartchem_v4/test/gs1_test.dart",
-              ),
-          ]
-
-          for start_marker, end_marker, destination in blocks:
-              extract_block(
-                  start_marker,
-                  end_marker,
-                  destination,
+                  f"Restored: {relative}"
               )
           PY
 
           test -s smartchem_v4/pubspec.yaml
-          test -s smartchem_v4/l10n.yaml
           test -s smartchem_v4/lib/main.dart
           test -s smartchem_v4/lib/l10n/app_ar.arb
           test -s smartchem_v4/lib/l10n/app_en.arb
@@ -260,20 +214,12 @@ jobs:
             smartchem_v4/lib/main.dart
 
           grep -q \
-            "class InventoryScreen" \
-            smartchem_v4/lib/main.dart
-
-          grep -q \
-            "class MaterialDetailsScreen" \
-            smartchem_v4/lib/main.dart
-
-          grep -q \
             "class UsersScreen" \
             smartchem_v4/lib/main.dart
 
-          echo "Complete SmartChem application recovered"
+          echo "SmartChem source restored successfully"
 
-      - name: Apply SmartChem v4.0.7 corrections
+      - name: Fix FilePicker and update v4.0.8
         shell: bash
         run: |
           set -e
@@ -288,6 +234,10 @@ jobs:
 
           main_path = Path(
               "smartchem_v4/lib/main.dart"
+          )
+
+          l10n_path = Path(
+              "smartchem_v4/l10n.yaml"
           )
 
           arabic_path = Path(
@@ -306,6 +256,10 @@ jobs:
               encoding="utf-8"
           )
 
+          l10n = l10n_path.read_text(
+              encoding="utf-8"
+          )
+
           arabic = arabic_path.read_text(
               encoding="utf-8"
           )
@@ -314,452 +268,179 @@ jobs:
               encoding="utf-8"
           )
 
-          # -------------------------------------------
-          # Version and Dart SDK
-          # -------------------------------------------
+          # ----------------------------------------
+          # Application version
+          # ----------------------------------------
 
           pubspec, version_count = re.subn(
               r"(?m)^version:\s*[^\n]+$",
-              "version: 4.0.7+8",
+              "version: 4.0.8+9",
               pubspec,
               count=1,
           )
 
           if version_count != 1:
               raise SystemExit(
-                  "Application version could not be updated"
-              )
-
-          pubspec, sdk_count = re.subn(
-              r'(?m)^(\s*)sdk:\s*"[^"]+"\s*$',
-              r'\1sdk: ">=3.7.0 <4.0.0"',
-              pubspec,
-              count=1,
-          )
-
-          if sdk_count != 1:
-              raise SystemExit(
-                  "Dart SDK constraint could not be updated"
+                  "Application version was not updated"
               )
 
           arabic = re.sub(
               r"الإصدار\s+\d+\.\d+\.\d+",
-              "الإصدار 4.0.7",
+              "الإصدار 4.0.8",
               arabic,
               count=1,
           )
 
           english = re.sub(
               r"Version\s+\d+\.\d+\.\d+",
-              "Version 4.0.7",
+              "Version 4.0.8",
               english,
               count=1,
           )
 
-          # -------------------------------------------
-          # Fixed package versions
-          # -------------------------------------------
+          # ----------------------------------------
+          # Remove obsolete Flutter localization key
+          # ----------------------------------------
 
-          dependencies = {
-              "intl": "0.20.2",
-              "mobile_scanner": "7.1.4",
-              "sqflite": "2.4.2",
-              "path": "1.9.1",
-              "crypto": "3.0.6",
-              "image_picker": "1.1.2",
-              "file_picker": "11.0.2",
-              "excel": "4.0.6",
-              "pdf": "3.12.0",
-              "printing": "5.14.3",
-              "path_provider": "2.1.5",
-              "share_plus": "11.1.0",
-              "cross_file": "0.3.4+2",
-          }
+          l10n = re.sub(
+              r"(?m)^\s*synthetic-package\s*:"
+              r"\s*[^\n]+\n?",
+              "",
+              l10n,
+          )
 
-          for package, version in dependencies.items():
-              pattern = re.compile(
-                  rf"(?m)^(\s*)"
-                  rf"{re.escape(package)}:"
-                  rf"\s*[^\n]+$"
-              )
+          # ----------------------------------------
+          # file_picker 11.0.2 API correction
+          # ----------------------------------------
 
-              def dependency_replacement(
-                  match: re.Match,
-                  package_name: str = package,
-                  package_version: str = version,
-              ) -> str:
-                  return (
-                      f"{match.group(1)}"
-                      f"{package_name}: "
-                      f"{package_version}"
-                  )
-
-              pubspec, count = pattern.subn(
-                  dependency_replacement,
-                  pubspec,
-                  count=1,
-              )
-
-              if count != 1:
-                  raise SystemExit(
-                      f"Dependency not found: {package}"
-                  )
-
-          # -------------------------------------------
-          # PDF table API
-          # -------------------------------------------
+          old_picker_count = main.count(
+              "FilePicker.platform.pickFiles("
+          )
 
           main = main.replace(
-              "pw.Table.fromTextArray(",
-              "pw.TableHelper.fromTextArray(",
-          )
-
-          # -------------------------------------------
-          # Share Plus API
-          # -------------------------------------------
-
-          share_pattern = re.compile(
-              r"(?P<indent>^[ \t]*)"
-              r"await\s+Share\.shareXFiles\("
-              r"\s*<XFile>\["
-              r"\s*XFile\(file\.path\),"
-              r"\s*\],"
-              r"\s*text:\s*"
-              r"(?P<label>text\.[A-Za-z0-9_]+),"
-              r"\s*\);",
-              re.MULTILINE | re.DOTALL,
-          )
-
-          def replace_share(
-              match: re.Match,
-          ) -> str:
-              indent = match.group("indent")
-              label = match.group("label")
-
-              return (
-                  f"{indent}await SharePlus.instance.share(\n"
-                  f"{indent}  ShareParams(\n"
-                  f"{indent}    files: <XFile>[\n"
-                  f"{indent}      XFile(file.path),\n"
-                  f"{indent}    ],\n"
-                  f"{indent}    text: {label},\n"
-                  f"{indent}  ),\n"
-                  f"{indent});"
-              )
-
-          main, share_count = share_pattern.subn(
-              replace_share,
-              main,
+              "FilePicker.platform.pickFiles(",
+              "FilePicker.pickFiles(",
           )
 
           print(
-              f"Share API replacements: {share_count}"
+              f"FilePicker API replacements: "
+              f"{old_picker_count}"
           )
 
-          if "Share.shareXFiles" in main:
-              raise SystemExit(
-                  "Deprecated Share API still exists"
-              )
+          if old_picker_count < 1:
+              if "FilePicker.pickFiles(" not in main:
+                  raise SystemExit(
+                      "FilePicker call was not found"
+                  )
 
-          if "SharePlus.instance.share" not in main:
-              raise SystemExit(
-                  "New Share Plus API was not added"
-              )
+          # ----------------------------------------
+          # Make selected file null-safe
+          # ----------------------------------------
 
-          # -------------------------------------------
-          # Avoid const compatibility issues in Excel
-          # -------------------------------------------
-
-          main = main.replace(
-              "const xls.TextCellValue(",
-              "xls.TextCellValue(",
-          )
-
-          main = main.replace(
-              "const xls.DoubleCellValue(",
-              "xls.DoubleCellValue(",
-          )
-
-          main = main.replace(
-              "const xls.IntCellValue(",
-              "xls.IntCellValue(",
-          )
-
-          # -------------------------------------------
-          # Scanner widget
-          # -------------------------------------------
-
-          scanner_widget_pattern = re.compile(
-              r"MobileScanner\(\s*"
-              r"controller:\s*scanner,\s*"
-              r"onDetect:\s*processCapture,\s*"
-              r"\)",
+          file_path_pattern = re.compile(
+              r"(?P<indent>^[ \t]*)"
+              r"final String\? filePath"
+              r"\s*=\s*"
+              r"result\?\.files\.single\.path;",
               re.MULTILINE,
           )
 
-          scanner_widget_replacement = (
-              "MobileScanner(\n"
-              "  controller: scanner,\n"
-              "  onDetect: processCapture,\n"
-              "  tapToFocus: true,\n"
-              "  useAppLifecycleState: false,\n"
-              ")"
-          )
+          def replace_file_path(
+              match: re.Match,
+          ) -> str:
+              indent = match.group("indent")
 
-          main, scanner_widget_count = (
-              scanner_widget_pattern.subn(
-                  scanner_widget_replacement,
+              return (
+                  f"{indent}if (\n"
+                  f"{indent}  result == null ||\n"
+                  f"{indent}  result.files.isEmpty\n"
+                  f"{indent}) {{\n"
+                  f"{indent}  return;\n"
+                  f"{indent}}}\n"
+                  f"\n"
+                  f"{indent}final PlatformFile "
+                  f"selectedFile =\n"
+                  f"{indent}    result.files.single;\n"
+                  f"\n"
+                  f"{indent}final String? filePath =\n"
+                  f"{indent}    selectedFile.path;"
+              )
+
+          main, selected_file_count = (
+              file_path_pattern.subn(
+                  replace_file_path,
                   main,
                   count=1,
               )
           )
 
           print(
-              f"Scanner widget replacements: "
-              f"{scanner_widget_count}"
+              f"Selected file null-safety fixes: "
+              f"{selected_file_count}"
           )
 
-          if scanner_widget_count == 0:
-              if (
-                  "tapToFocus: true" not in main
-                  or
-                  "useAppLifecycleState: false" not in main
-              ):
+          if selected_file_count != 1:
+              if "final PlatformFile selectedFile" not in main:
                   raise SystemExit(
-                      "Scanner widget could not be corrected"
+                      "FilePicker null-safety block "
+                      "was not updated"
                   )
 
-          # -------------------------------------------
-          # Start camera after first frame
-          # -------------------------------------------
-
-          scanner_state_index = main.find(
-              "class _ScannerScreenState"
+          reason_pattern = re.compile(
+              r"reason:\s*"
+              r"result\.files\.single\.name,"
           )
 
-          if scanner_state_index < 0:
-              raise SystemExit(
-                  "Scanner state class was not found"
-              )
-
-          first_start_index = main.find(
-              "unawaited(scanner.start());",
-              scanner_state_index,
+          main, reason_count = reason_pattern.subn(
+              "reason: selectedFile.name,",
+              main,
+              count=1,
           )
 
-          if first_start_index < 0:
-              raise SystemExit(
-                  "Initial scanner start was not found"
-              )
-
-          previous_frame_index = main.find(
-              "addPostFrameCallback",
-              scanner_state_index,
-              first_start_index,
+          print(
+              f"Imported filename fixes: "
+              f"{reason_count}"
           )
 
-          if previous_frame_index < 0:
-              line_start = main.rfind(
-                  "\n",
-                  0,
-                  first_start_index,
-              ) + 1
+          if reason_count != 1:
+              if "reason: selectedFile.name," not in main:
+                  raise SystemExit(
+                      "Imported filename audit reason "
+                      "was not updated"
+                  )
 
-              line_end = main.find(
-                  "\n",
-                  first_start_index,
-              )
+          # ----------------------------------------
+          # Verify old errors no longer exist
+          # ----------------------------------------
 
-              if line_end < 0:
-                  line_end = len(main)
-
-              indentation = main[
-                  line_start:first_start_index
-              ]
-
-              delayed_start = (
-                  f"{indentation}WidgetsBinding.instance\n"
-                  f"{indentation}    .addPostFrameCallback((_) {{\n"
-                  f"{indentation}  if (mounted) {{\n"
-                  f"{indentation}    unawaited(scanner.start());\n"
-                  f"{indentation}  }}\n"
-                  f"{indentation}}});"
-              )
-
-              main = (
-                  main[:line_start]
-                  + delayed_start
-                  + main[line_end:]
-              )
-
-          # -------------------------------------------
-          # Make torch callback asynchronous
-          # -------------------------------------------
-
-          main = main.replace(
-              """onPressed: () {
-                                      scanner
-                                          .toggleTorch();
-                                    },""",
-              """onPressed: () async {
-                                      await scanner
-                                          .toggleTorch();
-                                    },""",
-          )
-
-          # -------------------------------------------
-          # Replace the full filtered() function
-          # -------------------------------------------
-
-          filtered_token = (
-              "List<MaterialRecord> filtered() {"
-          )
-
-          title_token = "String title("
-
-          filtered_index = main.find(
-              filtered_token
-          )
-
-          if filtered_index < 0:
-              raise SystemExit(
-                  "Inventory filtered function was not found"
-              )
-
-          filtered_line_start = main.rfind(
-              "\n",
-              0,
-              filtered_index,
-          ) + 1
-
-          title_index = main.find(
-              title_token,
-              filtered_index,
-          )
-
-          if title_index < 0:
-              raise SystemExit(
-                  "Inventory title function was not found"
-              )
-
-          title_line_start = main.rfind(
-              "\n",
-              0,
-              title_index,
-          ) + 1
-
-          indentation = main[
-              filtered_line_start:filtered_index
+          forbidden_values = [
+              "FilePicker.platform.pickFiles(",
+              "result.files.single.name",
           ]
 
-          inner = indentation + "  "
-          inner2 = indentation + "    "
-          inner3 = indentation + "      "
+          for value in forbidden_values:
+              if value in main:
+                  raise SystemExit(
+                      f"Old source value remains: {value}"
+                  )
 
-          filtered_function = (
-              f"{indentation}List<MaterialRecord> filtered() {{\n"
-              f"{inner}final String query =\n"
-              f"{inner2}search.text.trim().toLowerCase();\n"
-              f"\n"
-              f"{inner}Iterable<MaterialRecord> result =\n"
-              f"{inner2}materials;\n"
-              f"\n"
-              f"{inner}if (filter == MaterialFilter.all) {{\n"
-              f"{inner2}result = result.where(\n"
-              f"{inner3}(MaterialRecord item) =>\n"
-              f"{inner3}    !item.isArchived,\n"
-              f"{inner2});\n"
-              f"{inner}}} else if (\n"
-              f"{inner2}filter == MaterialFilter.available\n"
-              f"{inner}) {{\n"
-              f"{inner2}result = result.where(\n"
-              f"{inner3}(MaterialRecord item) =>\n"
-              f"{inner3}    item.isAvailable,\n"
-              f"{inner2});\n"
-              f"{inner}}} else if (\n"
-              f"{inner2}filter == MaterialFilter.expiredOrEmpty\n"
-              f"{inner}) {{\n"
-              f"{inner2}result = result.where(\n"
-              f"{inner3}(MaterialRecord item) =>\n"
-              f"{inner3}    item.isExpiredOrEmpty,\n"
-              f"{inner2});\n"
-              f"{inner}}} else if (\n"
-              f"{inner2}filter == MaterialFilter.unused\n"
-              f"{inner}) {{\n"
-              f"{inner2}result = result.where(\n"
-              f"{inner3}(MaterialRecord item) =>\n"
-              f"{inner3}    item.isUnused,\n"
-              f"{inner2});\n"
-              f"{inner}}} else if (\n"
-              f"{inner2}filter == MaterialFilter.archived\n"
-              f"{inner}) {{\n"
-              f"{inner2}result = result.where(\n"
-              f"{inner3}(MaterialRecord item) =>\n"
-              f"{inner3}    item.isArchived,\n"
-              f"{inner2});\n"
-              f"{inner}}}\n"
-              f"\n"
-              f"{inner}if (query.isNotEmpty) {{\n"
-              f"{inner2}result = result.where(\n"
-              f"{inner3}(MaterialRecord item) {{\n"
-              f"{inner3}  return item.name\n"
-              f"{inner3}          .toLowerCase()\n"
-              f"{inner3}          .contains(query) ||\n"
-              f"{inner3}      item.rawBarcode\n"
-              f"{inner3}          .toLowerCase()\n"
-              f"{inner3}          .contains(query) ||\n"
-              f"{inner3}      item.serialNumber\n"
-              f"{inner3}          .toLowerCase()\n"
-              f"{inner3}          .contains(query) ||\n"
-              f"{inner3}      item.lotNumber\n"
-              f"{inner3}          .toLowerCase()\n"
-              f"{inner3}          .contains(query) ||\n"
-              f"{inner3}      item.gtin\n"
-              f"{inner3}          .toLowerCase()\n"
-              f"{inner3}          .contains(query);\n"
-              f"{inner3}}},\n"
-              f"{inner2});\n"
-              f"{inner}}}\n"
-              f"\n"
-              f"{inner}return result.toList();\n"
-              f"{indentation}}}"
-          )
-
-          main = (
-              main[:filtered_line_start]
-              + filtered_function
-              + "\n\n"
-              + main[title_line_start:]
-          )
-
-          # -------------------------------------------
-          # Safety checks
-          # -------------------------------------------
-
-          required_source_values = [
+          required_values = [
+              "FilePicker.pickFiles(",
+              "final PlatformFile selectedFile",
+              "selectedFile.path",
+              "reason: selectedFile.name,",
               "SharePlus.instance.share",
               "pw.TableHelper.fromTextArray",
               "tapToFocus: true",
               "useAppLifecycleState: false",
-              "addPostFrameCallback",
-              "List<MaterialRecord> filtered()",
           ]
 
-          for value in required_source_values:
+          for value in required_values:
               if value not in main:
                   raise SystemExit(
-                      f"Required source value missing: {value}"
+                      f"Required source value missing: "
+                      f"{value}"
                   )
-
-          if "Share.shareXFiles" in main:
-              raise SystemExit(
-                  "Old Share API remains"
-              )
-
-          if "pw.Table.fromTextArray" in main:
-              raise SystemExit(
-                  "Old PDF table API remains"
-              )
 
           pubspec_path.write_text(
               pubspec,
@@ -768,6 +449,11 @@ jobs:
 
           main_path.write_text(
               main,
+              encoding="utf-8",
+          )
+
+          l10n_path.write_text(
+              l10n,
               encoding="utf-8",
           )
 
@@ -782,7 +468,7 @@ jobs:
           )
 
           print(
-              "SmartChem v4.0.7 source corrections completed"
+              "SmartChem v4.0.8 source corrections completed"
           )
           PY
 
@@ -801,12 +487,12 @@ jobs:
           )
 
           ndk_version = (
-              "27.0.12077973"
+              "28.2.13676358"
           )
 
-          # -------------------------------------------
+          # ----------------------------------------
           # AndroidManifest.xml
-          # -------------------------------------------
+          # ----------------------------------------
 
           manifest_path = Path(
               "android/app/src/main/AndroidManifest.xml"
@@ -816,12 +502,12 @@ jobs:
               encoding="utf-8"
           )
 
-          manifest_match = re.search(
+          manifest_root = re.search(
               r"<manifest\b[^>]*>",
               manifest,
           )
 
-          if manifest_match is None:
+          if manifest_root is None:
               raise SystemExit(
                   "Android manifest root was not found"
               )
@@ -859,13 +545,13 @@ jobs:
           ]
 
           if missing_entries:
-              insert_position = manifest_match.end()
+              insert_at = manifest_root.end()
 
               manifest = (
-                  manifest[:insert_position]
+                  manifest[:insert_at]
                   + "\n    "
                   + "\n    ".join(missing_entries)
-                  + manifest[insert_position:]
+                  + manifest[insert_at:]
               )
 
           manifest = re.sub(
@@ -880,9 +566,9 @@ jobs:
               encoding="utf-8",
           )
 
-          # -------------------------------------------
-          # Android Gradle Kotlin DSL
-          # -------------------------------------------
+          # ----------------------------------------
+          # Android build.gradle.kts
+          # ----------------------------------------
 
           gradle_kts = Path(
               "android/app/build.gradle.kts"
@@ -937,18 +623,24 @@ jobs:
                   gradle,
               ):
                   gradle = re.sub(
-                      r'(?m)^(\s*)ndkVersion\s*=\s*[^\n]+',
-                      rf'\1ndkVersion = "{ndk_version}"',
+                      r'(?m)^(\s*)ndkVersion'
+                      r'\s*=\s*[^\n]+',
+                      (
+                          rf'\1ndkVersion = '
+                          rf'"{ndk_version}"'
+                      ),
                       gradle,
                       count=1,
                   )
               else:
                   gradle = re.sub(
-                      r"(?m)^(\s*)compileSdk\s*=\s*36\s*$",
+                      r"(?m)^(\s*)"
+                      r"compileSdk\s*=\s*36\s*$",
                       (
                           r'\1compileSdk = 36'
                           "\n"
-                          rf'\1ndkVersion = "{ndk_version}"'
+                          rf'\1ndkVersion = '
+                          rf'"{ndk_version}"'
                       ),
                       gradle,
                       count=1,
@@ -1034,18 +726,24 @@ jobs:
                   gradle,
               ):
                   gradle = re.sub(
-                      r'(?m)^(\s*)ndkVersion\s+[^\n]+',
-                      rf'\1ndkVersion "{ndk_version}"',
+                      r'(?m)^(\s*)ndkVersion'
+                      r'\s+[^\n]+',
+                      (
+                          rf'\1ndkVersion '
+                          rf'"{ndk_version}"'
+                      ),
                       gradle,
                       count=1,
                   )
               else:
                   gradle = re.sub(
-                      r"(?m)^(\s*)compileSdkVersion\s+36\s*$",
+                      r"(?m)^(\s*)"
+                      r"compileSdkVersion\s+36\s*$",
                       (
                           r'\1compileSdkVersion 36'
                           "\n"
-                          rf'\1ndkVersion "{ndk_version}"'
+                          rf'\1ndkVersion '
+                          rf'"{ndk_version}"'
                       ),
                       gradle,
                       count=1,
@@ -1075,9 +773,9 @@ jobs:
                   "Android app Gradle file was not found"
               )
 
-          # -------------------------------------------
+          # ----------------------------------------
           # Gradle properties
-          # -------------------------------------------
+          # ----------------------------------------
 
           properties_path = Path(
               "android/gradle.properties"
@@ -1102,19 +800,19 @@ jobs:
           }
 
           for key, value in properties_to_set.items():
-              expression = re.compile(
+              pattern = re.compile(
                   rf"(?m)^{re.escape(key)}=.*$"
               )
 
-              new_line = f"{key}={value}"
+              line = f"{key}={value}"
 
-              if expression.search(properties):
-                  properties = expression.sub(
-                      new_line,
+              if pattern.search(properties):
+                  properties = pattern.sub(
+                      line,
                       properties,
                   )
               else:
-                  properties += "\n" + new_line
+                  properties += "\n" + line
 
           properties_path.write_text(
               properties.strip() + "\n",
@@ -1156,25 +854,14 @@ jobs:
 
           cp \
             pubspec.lock \
-            ../smartchem-pubspec-lock.txt
+            ../smartchem-v4.0.8-pubspec.lock
 
           flutter pub deps \
-            > ../smartchem-dependencies.txt
+            > ../smartchem-v4.0.8-dependencies.txt
 
           echo "Flutter packages installed"
 
-      - name: Apply automatic Dart fixes
-        working-directory: smartchem_v4
-        shell: bash
-        run: |
-          set +e
-
-          dart fix --apply \
-            2>&1 | tee ../smartchem-dart-fix.log
-
-          exit 0
-
-      - name: Format source
+      - name: Format Dart source
         working-directory: smartchem_v4
         shell: bash
         run: |
@@ -1182,41 +869,25 @@ jobs:
 
           dart format lib test
 
-      - name: Verify corrected project
+      - name: Verify fixed source
         shell: bash
         run: |
           set -e
 
           grep -n \
-            "version: 4.0.7+8" \
+            "version: 4.0.8+9" \
             smartchem_v4/pubspec.yaml
 
           grep -n \
-            "mobile_scanner: 7.1.4" \
-            smartchem_v4/pubspec.yaml
-
-          grep -n \
-            "share_plus: 11.1.0" \
-            smartchem_v4/pubspec.yaml
-
-          grep -n \
-            "TableHelper.fromTextArray" \
+            "FilePicker.pickFiles" \
             smartchem_v4/lib/main.dart
 
           grep -n \
-            "SharePlus.instance.share" \
+            "final PlatformFile selectedFile" \
             smartchem_v4/lib/main.dart
 
           grep -n \
-            "tapToFocus: true" \
-            smartchem_v4/lib/main.dart
-
-          grep -n \
-            "useAppLifecycleState: false" \
-            smartchem_v4/lib/main.dart
-
-          grep -n \
-            "addPostFrameCallback" \
+            "reason: selectedFile.name" \
             smartchem_v4/lib/main.dart
 
           grep -n \
@@ -1225,49 +896,55 @@ jobs:
             2>/dev/null || true
 
           if grep -n \
-            "Share.shareXFiles" \
+            "FilePicker.platform" \
             smartchem_v4/lib/main.dart; then
 
-            echo "Deprecated Share API still exists"
+            echo "Old FilePicker.platform API remains"
             exit 1
           fi
 
           if grep -n \
-            "pw.Table.fromTextArray" \
+            "result.files.single.name" \
             smartchem_v4/lib/main.dart; then
 
-            echo "Deprecated PDF API still exists"
+            echo "Unsafe nullable FilePicker result remains"
             exit 1
           fi
 
-          echo "Corrected project verification passed"
+          if grep -n \
+            "synthetic-package" \
+            smartchem_v4/l10n.yaml; then
+
+            echo "Obsolete synthetic-package remains"
+            exit 1
+          fi
+
+          echo "Source verification passed"
 
       - name: Analyze Flutter source
-        id: analyze
-        continue-on-error: true
         working-directory: smartchem_v4
         shell: bash
         run: |
+          set -e
           set -o pipefail
 
           flutter analyze \
             --no-fatal-infos \
             --no-fatal-warnings \
-            2>&1 | tee ../smartchem-analyze.log
+            2>&1 | tee ../smartchem-v4.0.8-analyze.log
 
       - name: Run Flutter tests
-        id: tests
-        continue-on-error: true
         working-directory: smartchem_v4
         shell: bash
         run: |
+          set -e
           set -o pipefail
 
           flutter test \
             --reporter expanded \
-            2>&1 | tee ../smartchem-test.log
+            2>&1 | tee ../smartchem-v4.0.8-test.log
 
-      - name: Show final Android configuration
+      - name: Show Android configuration
         working-directory: smartchem_v4
         shell: bash
         run: |
@@ -1281,65 +958,47 @@ jobs:
             cat android/app/build.gradle
           fi
 
-          echo "========== SETTINGS GRADLE =========="
-
-          if [ -f android/settings.gradle.kts ]; then
-            cat android/settings.gradle.kts
-          else
-            cat android/settings.gradle
-          fi
-
-          echo "========== GRADLE WRAPPER =========="
-
-          cat \
-            android/gradle/wrapper/gradle-wrapper.properties
-
           echo "========== GRADLE PROPERTIES =========="
 
           cat android/gradle.properties
 
-          echo "========== ANDROID MANIFEST =========="
+          echo "========== MANIFEST =========="
 
           cat \
             android/app/src/main/AndroidManifest.xml
 
-      - name: Build SmartChem APK
-        id: apk_build
-        continue-on-error: true
+      - name: Build SmartChem v4.0.8 APK
         working-directory: smartchem_v4
         shell: bash
         run: |
+          set -e
           set -o pipefail
 
           flutter build apk \
             --debug \
             --no-pub \
-            --build-name=4.0.7 \
-            --build-number=8 \
-            2>&1 | tee ../smartchem-build.log
+            --build-name=4.0.8 \
+            --build-number=9 \
+            2>&1 | tee ../smartchem-v4.0.8-build.log
 
       - name: Locate and copy APK
-        id: locate_apk
-        if: always()
         shell: bash
         run: |
-          set +e
+          set -e
 
-          echo "Searching for generated APK files..."
+          echo "Generated APK files:"
 
           find smartchem_v4/build \
             -type f \
             -name "*.apk" \
-            -print \
-            2>/dev/null | tee smartchem-apk-files.txt
+            -print
 
           APK_PATH="$(
             find smartchem_v4/build \
               -type f \
               -name "app-debug.apk" \
               -print \
-              -quit \
-              2>/dev/null
+              -quit
           )"
 
           if [ -z "$APK_PATH" ]; then
@@ -1348,122 +1007,61 @@ jobs:
                 -type f \
                 -name "*.apk" \
                 -print \
-                -quit \
-                2>/dev/null
+                -quit
             )"
           fi
 
           if [ -z "$APK_PATH" ]; then
-            echo "apk_found=false" \
-              >> "$GITHUB_OUTPUT"
-
-            echo "No APK file was generated"
-            exit 0
+            echo "APK file was not generated"
+            exit 1
           fi
 
           cp \
             "$APK_PATH" \
-            SmartChemTrack-v4.0.7-TEST.apk
+            SmartChemTrack-v4.0.8-TEST.apk
 
           sha256sum \
-            SmartChemTrack-v4.0.7-TEST.apk \
-            > SmartChemTrack-v4.0.7-SHA256.txt
+            SmartChemTrack-v4.0.8-TEST.apk \
+            > SmartChemTrack-v4.0.8-SHA256.txt
 
-          echo "apk_found=true" \
-            >> "$GITHUB_OUTPUT"
-
-          echo "apk_path=$APK_PATH" \
-            >> "$GITHUB_OUTPUT"
-
-          echo "APK copied successfully"
-
-          ls -lh \
-            SmartChemTrack-v4.0.7-TEST.apk
-
-          cat \
-            SmartChemTrack-v4.0.7-SHA256.txt
-
-      - name: Create build information
-        if: always()
-        shell: bash
-        run: |
-          cat > SmartChemTrack-v4.0.7-BUILD-INFO.txt <<INFO
+          cat > SmartChemTrack-v4.0.8-BUILD-INFO.txt <<'INFO'
           SmartChem Track
-          Version: 4.0.7
-          Build number: 8
+          Version: 4.0.8
+          Build number: 9
           Application ID: om.smartchem.track.production
           Build type: Debug test APK
+          Flutter: 3.44.6
+          Java: 17
           Android minimum SDK: 23
           Android target SDK: 35
           Android compile SDK: 36
-          Android NDK: 27.0.12077973
-          Java: 17
+          Android NDK: 28.2.13676358
           Scanner: mobile_scanner 7.1.4
           Scanner engine: CameraX and Google ML Kit
-          Analyze outcome: ${{ steps.analyze.outcome }}
-          Test outcome: ${{ steps.tests.outcome }}
-          APK build outcome: ${{ steps.apk_build.outcome }}
-          APK found: ${{ steps.locate_apk.outputs.apk_found }}
+          File picker: file_picker 11.0.2
           INFO
 
+          test -s \
+            SmartChemTrack-v4.0.8-TEST.apk
+
+          ls -lh \
+            SmartChemTrack-v4.0.8-TEST.apk
+
           cat \
-            SmartChemTrack-v4.0.7-BUILD-INFO.txt
+            SmartChemTrack-v4.0.8-SHA256.txt
 
-      - name: Write job summary
-        if: always()
-        shell: bash
-        run: |
-          {
-            echo "# SmartChem Track v4.0.7"
-            echo ""
-            echo "| Check | Result |"
-            echo "|---|---|"
-            echo "| Flutter analyze | ${{ steps.analyze.outcome }} |"
-            echo "| Flutter tests | ${{ steps.tests.outcome }} |"
-            echo "| APK build | ${{ steps.apk_build.outcome }} |"
-            echo "| APK found | ${{ steps.locate_apk.outputs.apk_found }} |"
-            echo ""
-
-            echo "## Analyze log"
-            echo '```text'
-            tail -n 200 \
-              smartchem-analyze.log \
-              2>/dev/null || true
-            echo '```'
-            echo ""
-
-            echo "## Test log"
-            echo '```text'
-            tail -n 200 \
-              smartchem-test.log \
-              2>/dev/null || true
-            echo '```'
-            echo ""
-
-            echo "## Build log"
-            echo '```text'
-            tail -n 300 \
-              smartchem-build.log \
-              2>/dev/null || true
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Upload complete diagnostic package
+      - name: Upload diagnostic logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: SmartChemTrack-v4.0.7-Diagnostic-Logs
+          name: SmartChemTrack-v4.0.8-Diagnostic-Logs
           path: |
-            smartchem-dart-fix.log
-            smartchem-analyze.log
-            smartchem-test.log
-            smartchem-build.log
-            smartchem-dependencies.txt
-            smartchem-pubspec-lock.txt
-            smartchem-apk-files.txt
-            SmartChemTrack-v4.0.7-BUILD-INFO.txt
+            smartchem-v4.0.8-analyze.log
+            smartchem-v4.0.8-test.log
+            smartchem-v4.0.8-build.log
+            smartchem-v4.0.8-dependencies.txt
+            smartchem-v4.0.8-pubspec.lock
             smartchem_v4/pubspec.yaml
-            smartchem_v4/pubspec.lock
             smartchem_v4/l10n.yaml
             smartchem_v4/lib/main.dart
             smartchem_v4/lib/l10n/app_ar.arb
@@ -1480,61 +1078,12 @@ jobs:
           if-no-files-found: warn
 
       - name: Upload SmartChem APK
-        if: steps.locate_apk.outputs.apk_found == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: SmartChemTrack-v4.0.7-TEST-APK
+          name: SmartChemTrack-v4.0.8-TEST-APK
           path: |
-            SmartChemTrack-v4.0.7-TEST.apk
-            SmartChemTrack-v4.0.7-SHA256.txt
-            SmartChemTrack-v4.0.7-BUILD-INFO.txt
+            SmartChemTrack-v4.0.8-TEST.apk
+            SmartChemTrack-v4.0.8-SHA256.txt
+            SmartChemTrack-v4.0.8-BUILD-INFO.txt
           retention-days: 30
           if-no-files-found: error
-
-      - name: Final quality check
-        if: always()
-        shell: bash
-        run: |
-          set -e
-
-          echo "Analyze outcome: ${{ steps.analyze.outcome }}"
-          echo "Test outcome: ${{ steps.tests.outcome }}"
-          echo "Build outcome: ${{ steps.apk_build.outcome }}"
-          echo "APK found: ${{ steps.locate_apk.outputs.apk_found }}"
-
-          if [ "${{ steps.analyze.outcome }}" != "success" ]; then
-            echo "Flutter analyze failed"
-            cat smartchem-analyze.log || true
-            exit 1
-          fi
-
-          if [ "${{ steps.tests.outcome }}" != "success" ]; then
-            echo "Flutter tests failed"
-            cat smartchem-test.log || true
-            exit 1
-          fi
-
-          if [ "${{ steps.apk_build.outcome }}" != "success" ]; then
-            echo "Flutter APK build failed"
-            cat smartchem-build.log || true
-            exit 1
-          fi
-
-          if [ "${{ steps.locate_apk.outputs.apk_found }}" != "true" ]; then
-            echo "APK file was not found"
-            find smartchem_v4/build \
-              -maxdepth 8 \
-              -type f \
-              2>/dev/null || true
-            exit 1
-          fi
-
-          test -s \
-            SmartChemTrack-v4.0.7-TEST.apk
-
-          echo "================================"
-          echo "ALL SMARTCHEM CHECKS PASSED"
-          echo "================================"
-
-          ls -lh \
-            SmartChemTrack-v4.0.7-TEST.apk
