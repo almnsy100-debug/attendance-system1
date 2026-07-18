@@ -1,4 +1,4 @@
-name: Build SmartChem Track v4.0.5
+name: Build SmartChem Track v4.0.6
 
 on:
   workflow_dispatch:
@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build SmartChem Track v4.0.5 APK
+    name: Build SmartChem Track v4.0.6 APK
     runs-on: ubuntu-24.04
     timeout-minutes: 90
 
@@ -37,7 +37,7 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Show environment
+      - name: Show build environment
         shell: bash
         run: |
           set -e
@@ -57,7 +57,7 @@ jobs:
 
           flutter doctor -v
 
-      - name: Install Android SDK 35
+      - name: Install Android SDK 36
         shell: bash
         run: |
           set -e
@@ -81,8 +81,10 @@ jobs:
 
           "$SDKMANAGER" \
             "platform-tools" \
-            "platforms;android-35" \
-            "build-tools;35.0.0"
+            "platforms;android-36" \
+            "build-tools;36.0.0"
+
+          echo "Android SDK 36 installed"
 
       - name: Create clean Flutter project
         shell: bash
@@ -102,15 +104,15 @@ jobs:
           mkdir -p smartchem_v4/lib/l10n
           mkdir -p smartchem_v4/test
 
-          echo "Flutter project created"
+          echo "Clean Flutter project created"
 
-      - name: Recover complete SmartChem v4 source
+      - name: Recover complete SmartChem application
         shell: bash
         run: |
           set -e
 
           SOURCE_COMMIT="9f81a3414472d86e3cb0aa820e8863967994d03c"
-          SOURCE_WORKFLOW="/tmp/smartchem-v4-source.yml"
+          SOURCE_WORKFLOW="/tmp/smartchem-v4-original.yml"
 
           if ! git cat-file -e "${SOURCE_COMMIT}^{commit}" 2>/dev/null; then
             git fetch origin "${SOURCE_COMMIT}"
@@ -124,7 +126,7 @@ jobs:
           from pathlib import Path
 
           source_path = Path(
-              "/tmp/smartchem-v4-source.yml"
+              "/tmp/smartchem-v4-original.yml"
           )
 
           source_lines = source_path.read_text(
@@ -134,15 +136,13 @@ jobs:
           def extract_block(
               start_marker: str,
               end_marker: str,
-              output_path: str,
+              destination_path: str,
           ) -> None:
-
               collecting = False
-              output_lines: list[str] = []
               end_found = False
+              output_lines: list[str] = []
 
               for line in source_lines:
-
                   if not collecting:
                       if start_marker in line:
                           collecting = True
@@ -152,7 +152,6 @@ jobs:
                       end_found = True
                       break
 
-                  # إزالة مسافة YAML فقط.
                   if line.startswith("          "):
                       line = line[10:]
 
@@ -170,10 +169,10 @@ jobs:
 
               if not output_lines:
                   raise SystemExit(
-                      f"No content extracted for: {output_path}"
+                      f"No source extracted for: {destination_path}"
                   )
 
-              destination = Path(output_path)
+              destination = Path(destination_path)
 
               destination.parent.mkdir(
                   parents=True,
@@ -186,7 +185,7 @@ jobs:
               )
 
               print(
-                  f"Recovered {output_path}: "
+                  f"Recovered {destination_path}: "
                   f"{len(output_lines)} lines"
               )
 
@@ -232,11 +231,11 @@ jobs:
               ),
           ]
 
-          for start_marker, end_marker, output_path in blocks:
+          for start_marker, end_marker, destination in blocks:
               extract_block(
                   start_marker,
                   end_marker,
-                  output_path,
+                  destination,
               )
           PY
 
@@ -271,9 +270,9 @@ jobs:
             "class UsersScreen" \
             smartchem_v4/lib/main.dart
 
-          echo "Complete SmartChem source recovered"
+          echo "Complete SmartChem application recovered"
 
-      - name: Apply SmartChem v4.0.5 fixes
+      - name: Apply SmartChem v4.0.6 source corrections
         shell: bash
         run: |
           set -e
@@ -314,20 +313,22 @@ jobs:
               encoding="utf-8"
           )
 
-          # رقم النسخة.
+          # --------------------------------------------------
+          # Version
+          # --------------------------------------------------
+
           pubspec, version_count = re.subn(
               r"(?m)^version:\s*[^\n]+$",
-              "version: 4.0.5+6",
+              "version: 4.0.6+7",
               pubspec,
               count=1,
           )
 
           if version_count != 1:
               raise SystemExit(
-                  "Application version was not updated"
+                  "Application version could not be updated"
               )
 
-          # mobile_scanner 7 يتطلب Dart 3.7 على الأقل.
           pubspec, sdk_count = re.subn(
               r'(?m)^(\s*)sdk:\s*"[^"]+"\s*$',
               r'\1sdk: ">=3.7.0 <4.0.0"',
@@ -337,24 +338,27 @@ jobs:
 
           if sdk_count != 1:
               raise SystemExit(
-                  "Dart SDK constraint was not updated"
+                  "Dart SDK constraint could not be updated"
               )
 
           arabic = re.sub(
               r"الإصدار\s+\d+\.\d+\.\d+",
-              "الإصدار 4.0.5",
+              "الإصدار 4.0.6",
               arabic,
               count=1,
           )
 
           english = re.sub(
               r"Version\s+\d+\.\d+\.\d+",
-              "Version 4.0.5",
+              "Version 4.0.6",
               english,
               count=1,
           )
 
-          # تثبيت إصدارات الحزم.
+          # --------------------------------------------------
+          # Exact package versions
+          # --------------------------------------------------
+
           dependencies = {
               "intl": "0.20.2",
               "mobile_scanner": "7.1.4",
@@ -372,27 +376,25 @@ jobs:
           }
 
           for package, version in dependencies.items():
-
-              pattern = re.compile(
+              expression = re.compile(
                   rf"(?m)^(\s*)"
                   rf"{re.escape(package)}:"
                   rf"\s*[^\n]+$"
               )
 
-              def dependency_replacement(
+              def replacement(
                   match: re.Match,
                   package_name: str = package,
                   package_version: str = version,
               ) -> str:
-
                   return (
                       f"{match.group(1)}"
                       f"{package_name}: "
                       f"{package_version}"
                   )
 
-              pubspec, count = pattern.subn(
-                  dependency_replacement,
+              pubspec, count = expression.subn(
+                  replacement,
                   pubspec,
                   count=1,
               )
@@ -402,14 +404,20 @@ jobs:
                       f"Dependency not found: {package}"
                   )
 
-          # إصلاح واجهة PDF.
+          # --------------------------------------------------
+          # PDF API
+          # --------------------------------------------------
+
           main = main.replace(
               "pw.Table.fromTextArray(",
               "pw.TableHelper.fromTextArray(",
           )
 
-          # إصلاح واجهة مشاركة الملفات.
-          share_pattern = re.compile(
+          # --------------------------------------------------
+          # Share Plus API
+          # --------------------------------------------------
+
+          old_share_pattern = re.compile(
               r"(?P<indent>^[ \t]*)"
               r"await\s+Share\.shareXFiles\("
               r"\s*<XFile>\["
@@ -424,7 +432,6 @@ jobs:
           def replace_share(
               match: re.Match,
           ) -> str:
-
               indent = match.group("indent")
               label = match.group("label")
 
@@ -439,7 +446,7 @@ jobs:
                   f"{indent});"
               )
 
-          main, share_count = share_pattern.subn(
+          main, share_count = old_share_pattern.subn(
               replace_share,
               main,
           )
@@ -448,15 +455,19 @@ jobs:
               f"Share API replacements: {share_count}"
           )
 
-          if share_count == 0:
-              # السماح باستمرار التنفيذ عندما يكون المصدر
-              # قد تم تصحيحه مسبقًا.
-              if "SharePlus.instance.share" not in main:
-                  raise SystemExit(
-                      "Share API could not be updated"
-                  )
+          if (
+              "Share.shareXFiles" in main
+              and
+              "SharePlus.instance.share" not in main
+          ):
+              raise SystemExit(
+                  "Share API correction failed"
+              )
 
-          # إضافة التركيز بالضغط.
+          # --------------------------------------------------
+          # Scanner widget
+          # --------------------------------------------------
+
           scanner_pattern = re.compile(
               r"MobileScanner\(\s*"
               r"controller:\s*scanner,\s*"
@@ -485,19 +496,11 @@ jobs:
               f"{scanner_count}"
           )
 
-          if scanner_count == 0:
-              if (
-                  "tapToFocus: true" not in main
-                  or
-                  "useAppLifecycleState: false" not in main
-              ):
-                  raise SystemExit(
-                      "Scanner widget could not be updated"
-                  )
+          # --------------------------------------------------
+          # Start camera after first frame
+          # --------------------------------------------------
 
-          # إصلاح المشكلة الحالية:
-          # البحث مرن ولا يعتمد على عدد المسافات.
-          start_pattern = re.compile(
+          initial_start_pattern = re.compile(
               r"(?m)^"
               r"(?P<indent>[ \t]*)"
               r"unawaited\("
@@ -512,7 +515,6 @@ jobs:
           def replace_initial_start(
               match: re.Match,
           ) -> str:
-
               indent = match.group("indent")
 
               return (
@@ -526,23 +528,94 @@ jobs:
                   f"{indent}manualTimer = Timer("
               )
 
-          main, start_count = start_pattern.subn(
-              replace_initial_start,
+          main, camera_start_count = (
+              initial_start_pattern.subn(
+                  replace_initial_start,
+                  main,
+                  count=1,
+              )
+          )
+
+          print(
+              f"Camera start replacements: "
+              f"{camera_start_count}"
+          )
+
+          # --------------------------------------------------
+          # Fix MaterialFilter switch fall-through
+          # --------------------------------------------------
+
+          filter_switch_pattern = re.compile(
+              r"(?P<indent>[ \t]*)"
+              r"switch\s*\(filter\)\s*\{"
+              r".*?"
+              r"(?P=indent)\}"
+              r"\s*\n"
+              r"\s*\n"
+              r"(?P=indent)"
+              r"if\s*\(query\.isNotEmpty\)",
+              re.DOTALL,
+          )
+
+          def replace_filter_switch(
+              match: re.Match,
+          ) -> str:
+              indent = match.group("indent")
+              inside = indent + "  "
+
+              return (
+                  f"{indent}if (filter == MaterialFilter.all) {{\n"
+                  f"{inside}result = result.where(\n"
+                  f"{inside}  (MaterialRecord item) =>\n"
+                  f"{inside}      !item.isArchived,\n"
+                  f"{inside});\n"
+                  f"{indent}}} else if (\n"
+                  f"{inside}filter == MaterialFilter.available\n"
+                  f"{indent}) {{\n"
+                  f"{inside}result = result.where(\n"
+                  f"{inside}  (MaterialRecord item) =>\n"
+                  f"{inside}      item.isAvailable,\n"
+                  f"{inside});\n"
+                  f"{indent}}} else if (\n"
+                  f"{inside}filter == MaterialFilter.expiredOrEmpty\n"
+                  f"{indent}) {{\n"
+                  f"{inside}result = result.where(\n"
+                  f"{inside}  (MaterialRecord item) =>\n"
+                  f"{inside}      item.isExpiredOrEmpty,\n"
+                  f"{inside});\n"
+                  f"{indent}}} else if (\n"
+                  f"{inside}filter == MaterialFilter.unused\n"
+                  f"{indent}) {{\n"
+                  f"{inside}result = result.where(\n"
+                  f"{inside}  (MaterialRecord item) =>\n"
+                  f"{inside}      item.isUnused,\n"
+                  f"{inside});\n"
+                  f"{indent}}} else if (\n"
+                  f"{inside}filter == MaterialFilter.archived\n"
+                  f"{indent}) {{\n"
+                  f"{inside}result = result.where(\n"
+                  f"{inside}  (MaterialRecord item) =>\n"
+                  f"{inside}      item.isArchived,\n"
+                  f"{inside});\n"
+                  f"{indent}}}\n"
+                  f"\n"
+                  f"{indent}if (query.isNotEmpty)"
+              )
+
+          main, filter_count = filter_switch_pattern.subn(
+              replace_filter_switch,
               main,
               count=1,
           )
 
           print(
-              f"Initial camera replacements: "
-              f"{start_count}"
+              f"Material filter replacements: "
+              f"{filter_count}"
           )
 
-          if start_count == 0:
-              # المصدر قد يكون مصححًا مسبقًا.
-              if "addPostFrameCallback" not in main:
-                  raise SystemExit(
-                      "Initial camera start could not be updated"
-                  )
+          # --------------------------------------------------
+          # Write corrected files
+          # --------------------------------------------------
 
           pubspec_path.write_text(
               pubspec,
@@ -565,7 +638,7 @@ jobs:
           )
 
           print(
-              "SmartChem v4.0.5 source fixes completed"
+              "SmartChem v4.0.6 source corrections completed"
           )
           PY
 
@@ -583,6 +656,10 @@ jobs:
               "om.smartchem.track.production"
           )
 
+          # --------------------------------------------------
+          # Android manifest
+          # --------------------------------------------------
+
           manifest_path = Path(
               "android/app/src/main/AndroidManifest.xml"
           )
@@ -591,7 +668,17 @@ jobs:
               encoding="utf-8"
           )
 
-          android_entries = [
+          manifest_match = re.search(
+              r"<manifest\b[^>]*>",
+              manifest,
+          )
+
+          if manifest_match is None:
+              raise SystemExit(
+                  "Android manifest root was not found"
+              )
+
+          required_entries = [
               (
                   '<uses-permission '
                   'android:name="android.permission.CAMERA" />'
@@ -617,25 +704,20 @@ jobs:
               ),
           ]
 
-          manifest_tag_end = manifest.find(">")
-
-          if manifest_tag_end < 0:
-              raise SystemExit(
-                  "Invalid AndroidManifest.xml"
-              )
-
           missing_entries = [
               entry
-              for entry in android_entries
+              for entry in required_entries
               if entry not in manifest
           ]
 
           if missing_entries:
+              insert_position = manifest_match.end()
+
               manifest = (
-                  manifest[:manifest_tag_end + 1]
+                  manifest[:insert_position]
                   + "\n    "
                   + "\n    ".join(missing_entries)
-                  + manifest[manifest_tag_end + 1:]
+                  + manifest[insert_position:]
               )
 
           manifest = re.sub(
@@ -650,6 +732,10 @@ jobs:
               encoding="utf-8",
           )
 
+          # --------------------------------------------------
+          # Android Gradle
+          # --------------------------------------------------
+
           gradle_kts = Path(
               "android/app/build.gradle.kts"
           )
@@ -659,9 +745,15 @@ jobs:
           )
 
           if gradle_kts.exists():
-
               gradle = gradle_kts.read_text(
                   encoding="utf-8"
+              )
+
+              gradle = re.sub(
+                  r'namespace\s*=\s*"[^"]+"',
+                  f'namespace = "{application_id}"',
+                  gradle,
+                  count=1,
               )
 
               gradle = re.sub(
@@ -673,7 +765,7 @@ jobs:
 
               gradle = re.sub(
                   r'compileSdk\s*=\s*[^\n]+',
-                  "compileSdk = 35",
+                  "compileSdk = 36",
                   gradle,
                   count=1,
               )
@@ -695,6 +787,11 @@ jobs:
               gradle = gradle.replace(
                   "JavaVersion.VERSION_11",
                   "JavaVersion.VERSION_17",
+              )
+
+              gradle = gradle.replace(
+                  "JvmTarget.JVM_11",
+                  "JvmTarget.JVM_17",
               )
 
               gradle = gradle.replace(
@@ -723,9 +820,15 @@ jobs:
               )
 
           elif gradle_groovy.exists():
-
               gradle = gradle_groovy.read_text(
                   encoding="utf-8"
+              )
+
+              gradle = re.sub(
+                  r'namespace\s+["\'][^"\']+["\']',
+                  f'namespace "{application_id}"',
+                  gradle,
+                  count=1,
               )
 
               gradle = re.sub(
@@ -737,7 +840,7 @@ jobs:
 
               gradle = re.sub(
                   r'compileSdkVersion\s+[^\n]+',
-                  "compileSdkVersion 35",
+                  "compileSdkVersion 36",
                   gradle,
                   count=1,
               )
@@ -777,8 +880,12 @@ jobs:
 
           else:
               raise SystemExit(
-                  "Android Gradle file was not found"
+                  "Android app Gradle file was not found"
               )
+
+          # --------------------------------------------------
+          # Gradle properties
+          # --------------------------------------------------
 
           properties_path = Path(
               "android/gradle.properties"
@@ -791,6 +898,7 @@ jobs:
           properties_to_set = {
               "android.useAndroidX": "true",
               "android.enableJetifier": "true",
+              "android.suppressUnsupportedCompileSdk": "36",
               "org.gradle.jvmargs":
                   "-Xmx4096m "
                   "-XX:MaxMetaspaceSize=1024m "
@@ -802,7 +910,6 @@ jobs:
           }
 
           for key, value in properties_to_set.items():
-
               expression = re.compile(
                   rf"(?m)^{re.escape(key)}=.*$"
               )
@@ -815,9 +922,7 @@ jobs:
                       properties,
                   )
               else:
-                  properties += (
-                      "\n" + new_line
-                  )
+                  properties += "\n" + new_line
 
           properties_path.write_text(
               properties.strip() + "\n",
@@ -828,13 +933,13 @@ jobs:
               f"Application ID: {application_id}"
           )
 
-          print("compileSdk: 35")
+          print("compileSdk: 36")
           print("targetSdk: 35")
           print("minSdk: 23")
           print("Java: 17")
           PY
 
-      - name: Clean Flutter project
+      - name: Clean project
         working-directory: smartchem_v4
         shell: bash
         run: |
@@ -844,6 +949,8 @@ jobs:
 
           rm -rf android/.gradle
           rm -rf build
+
+          echo "Project caches removed"
 
       - name: Install Flutter packages
         working-directory: smartchem_v4
@@ -861,6 +968,8 @@ jobs:
           flutter pub deps \
             > ../smartchem-dependencies.txt
 
+          echo "Flutter packages installed"
+
       - name: Format source
         working-directory: smartchem_v4
         shell: bash
@@ -875,7 +984,7 @@ jobs:
           set -e
 
           grep -n \
-            "version: 4.0.5+6" \
+            "version: 4.0.6+7" \
             smartchem_v4/pubspec.yaml
 
           grep -n \
@@ -887,11 +996,11 @@ jobs:
             smartchem_v4/pubspec.yaml
 
           grep -n \
-            "SharePlus.instance.share" \
+            "TableHelper.fromTextArray" \
             smartchem_v4/lib/main.dart
 
           grep -n \
-            "TableHelper.fromTextArray" \
+            "SharePlus.instance.share" \
             smartchem_v4/lib/main.dart
 
           grep -n \
@@ -910,7 +1019,7 @@ jobs:
             "Share.shareXFiles" \
             smartchem_v4/lib/main.dart; then
 
-            echo "Deprecated Share API remains"
+            echo "Deprecated Share API still exists"
             exit 1
           fi
 
@@ -918,13 +1027,13 @@ jobs:
             "pw.Table.fromTextArray" \
             smartchem_v4/lib/main.dart; then
 
-            echo "Deprecated PDF table API remains"
+            echo "Deprecated PDF table API still exists"
             exit 1
           fi
 
-          echo "Project verification passed"
+          echo "Corrected project verification passed"
 
-      - name: Analyze source
+      - name: Analyze Flutter source
         working-directory: smartchem_v4
         shell: bash
         run: |
@@ -951,11 +1060,9 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-          # الاستمرار إلى الاختبارات والبناء حتى تكون
-          # رسائل التجميع الفعلية متوفرة.
           exit 0
 
-      - name: Run tests
+      - name: Run Flutter tests
         working-directory: smartchem_v4
         shell: bash
         run: |
@@ -983,7 +1090,7 @@ jobs:
 
           exit 0
 
-      - name: Show Android configuration
+      - name: Show final Android configuration
         working-directory: smartchem_v4
         shell: bash
         run: |
@@ -997,14 +1104,6 @@ jobs:
             cat android/app/build.gradle
           fi
 
-          echo "========== SETTINGS GRADLE =========="
-
-          if [ -f android/settings.gradle.kts ]; then
-            cat android/settings.gradle.kts
-          else
-            cat android/settings.gradle
-          fi
-
           echo "========== GRADLE WRAPPER =========="
 
           cat \
@@ -1014,7 +1113,7 @@ jobs:
 
           cat android/gradle.properties
 
-          echo "========== MANIFEST =========="
+          echo "========== ANDROID MANIFEST =========="
 
           cat \
             android/app/src/main/AndroidManifest.xml
@@ -1029,9 +1128,8 @@ jobs:
           flutter build apk \
             --debug \
             --no-pub \
-            --build-name=4.0.5 \
-            --build-number=6 \
-            -v \
+            --build-name=4.0.6 \
+            --build-number=7 \
             2>&1 | tee ../smartchem-build.log
 
           BUILD_STATUS=${PIPESTATUS[0]}
@@ -1039,7 +1137,7 @@ jobs:
           echo "$BUILD_STATUS" \
             > ../smartchem-build-status.txt
 
-          tail -n 1500 \
+          tail -n 1200 \
             ../smartchem-build.log \
             > ../smartchem-build-tail.log
 
@@ -1059,7 +1157,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: SmartChemTrack-v4.0.5-Diagnostic-Logs
+          name: SmartChemTrack-v4.0.6-Diagnostic-Logs
           path: |
             smartchem-analyze.log
             smartchem-analyze-status.txt
@@ -1073,14 +1171,44 @@ jobs:
           retention-days: 30
           if-no-files-found: warn
 
-      - name: Check APK build result
+      - name: Check analysis tests and APK
         shell: bash
         run: |
           set -e
 
-          BUILD_STATUS=$(
+          ANALYZE_STATUS="$(
+            cat smartchem-analyze-status.txt
+          )"
+
+          TEST_STATUS="$(
+            cat smartchem-test-status.txt
+          )"
+
+          BUILD_STATUS="$(
             cat smartchem-build-status.txt
-          )
+          )"
+
+          echo "Analyze status: $ANALYZE_STATUS"
+          echo "Test status: $TEST_STATUS"
+          echo "Build status: $BUILD_STATUS"
+
+          if [ "$ANALYZE_STATUS" -ne 0 ]; then
+            echo "================================"
+            echo "FLUTTER ANALYZE FAILED"
+            echo "================================"
+
+            cat smartchem-analyze.log
+            exit "$ANALYZE_STATUS"
+          fi
+
+          if [ "$TEST_STATUS" -ne 0 ]; then
+            echo "================================"
+            echo "FLUTTER TESTS FAILED"
+            echo "================================"
+
+            cat smartchem-test.log
+            exit "$TEST_STATUS"
+          fi
 
           if [ "$BUILD_STATUS" -ne 0 ]; then
             echo "================================"
@@ -1088,18 +1216,17 @@ jobs:
             echo "================================"
 
             cat smartchem-build-tail.log
-
             exit "$BUILD_STATUS"
           fi
 
           APK_PATH="smartchem_v4/build/app/outputs/flutter-apk/app-debug.apk"
 
           if [ ! -f "$APK_PATH" ]; then
-            echo "Build completed but APK was not found"
+            echo "Build returned success but APK was not found"
             exit 1
           fi
 
-          echo "APK created successfully"
+          echo "All checks passed"
           ls -lh "$APK_PATH"
 
       - name: Copy and verify APK
@@ -1109,49 +1236,39 @@ jobs:
 
           cp \
             smartchem_v4/build/app/outputs/flutter-apk/app-debug.apk \
-            SmartChemTrack-v4.0.5-TEST.apk
+            SmartChemTrack-v4.0.6-TEST.apk
 
           sha256sum \
-            SmartChemTrack-v4.0.5-TEST.apk \
-            > SmartChemTrack-v4.0.5-SHA256.txt
+            SmartChemTrack-v4.0.6-TEST.apk \
+            > SmartChemTrack-v4.0.6-SHA256.txt
 
-          ANALYZE_STATUS=$(
-            cat smartchem-analyze-status.txt
-          )
-
-          TEST_STATUS=$(
-            cat smartchem-test-status.txt
-          )
-
-          cat > SmartChemTrack-v4.0.5-BUILD-INFO.txt <<INFO
+          cat > SmartChemTrack-v4.0.6-BUILD-INFO.txt <<'INFO'
           SmartChem Track
-          Version: 4.0.5
-          Build number: 6
+          Version: 4.0.6
+          Build number: 7
           Application ID: om.smartchem.track.production
           Build type: Debug test APK
           Android minimum SDK: 23
           Android target SDK: 35
-          Android compile SDK: 35
+          Android compile SDK: 36
           Java: 17
           Scanner: mobile_scanner 7.1.4
           Scanner engine: CameraX and Google ML Kit
-          Flutter analyze status: ${ANALYZE_STATUS}
-          Flutter test status: ${TEST_STATUS}
           INFO
 
           ls -lh \
-            SmartChemTrack-v4.0.5-TEST.apk
+            SmartChemTrack-v4.0.6-TEST.apk
 
           cat \
-            SmartChemTrack-v4.0.5-SHA256.txt
+            SmartChemTrack-v4.0.6-SHA256.txt
 
       - name: Upload SmartChem APK
         uses: actions/upload-artifact@v4
         with:
-          name: SmartChemTrack-v4.0.5-TEST-APK
+          name: SmartChemTrack-v4.0.6-TEST-APK
           path: |
-            SmartChemTrack-v4.0.5-TEST.apk
-            SmartChemTrack-v4.0.5-SHA256.txt
-            SmartChemTrack-v4.0.5-BUILD-INFO.txt
+            SmartChemTrack-v4.0.6-TEST.apk
+            SmartChemTrack-v4.0.6-SHA256.txt
+            SmartChemTrack-v4.0.6-BUILD-INFO.txt
           retention-days: 30
           if-no-files-found: error
