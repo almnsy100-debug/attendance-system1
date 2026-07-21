@@ -1,0 +1,37 @@
+name: production
+description: SmartChem Track laboratory inventory system
+publish_to: none
+version: 5.0.0+11
+
+environment:
+  sdk: ">=3.7.0 <4.0.0"
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+  intl: 0.20.2
+  mobile_scanner: 7.1.4
+  sqflite: 2.4.2
+  path: 1.9.1
+  crypto: 3.0.6
+  image_picker: 1.1.2
+  file_selector: 1.1.0
+  excel: 4.0.6
+  pdf: 3.12.0
+  printing: 5.14.3
+  path_provider: 2.1.5
+  share_plus: 11.1.0
+  cross_file: 0.3.4+2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: 6.0.0
+  sqflite_common_ffi: 2.4.2
+
+flutter:
+  uses-material-design: true
+  generate: true
+  assets:
+    - assets/fonts/NotoSansArabic-Regular.ttf

@@ -1,0 +1,17 @@
+# Flutter and Dart generated files
+**/.dart_tool/
+**/.flutter-plugins
+**/.flutter-plugins-dependencies
+**/build/
+**/android/.gradle/
+**/android/.kotlin/
+**/android/local.properties
+
+# IDE and local tooling
+.idea/
+*.iml
+.tooling/
+
+# Temporary recovered CI artifacts
+recovered_source/
+smartchem-source-artifact.zip
