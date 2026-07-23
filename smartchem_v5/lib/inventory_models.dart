@@ -284,8 +284,20 @@ class UnitRecord {
     required this.lotId,
     required this.productId,
     required this.productName,
+    required this.productSku,
+    required this.productType,
+    required this.gtin,
+    required this.catalogNumber,
+    required this.abbottListNo,
+    required this.mohCode,
+    required this.department,
+    required this.deviceName,
+    required this.storageLocation,
     required this.lotNumber,
+    required this.receivedAt,
     required this.cartonCode,
+    required this.cartonSourceBarcode,
+    required this.barcodeFormat,
     required this.unitCode,
     required this.sequenceNumber,
     required this.sourceBarcode,
@@ -313,8 +325,20 @@ class UnitRecord {
       lotId: map['lot_id'] as int,
       productId: map['product_id'] as int,
       productName: map['product_name']?.toString() ?? '',
+      productSku: map['product_sku']?.toString() ?? '',
+      productType: map['product_type']?.toString() ?? '',
+      gtin: map['gtin']?.toString() ?? '',
+      catalogNumber: map['catalog_number']?.toString() ?? '',
+      abbottListNo: map['abbott_list_no']?.toString() ?? '',
+      mohCode: map['moh_code']?.toString() ?? '',
+      department: map['department']?.toString() ?? '',
+      deviceName: map['device_name']?.toString() ?? '',
+      storageLocation: map['storage_location']?.toString() ?? '',
       lotNumber: map['lot_number']?.toString() ?? '',
+      receivedAt: inventoryDate(map['received_at']),
       cartonCode: map['carton_code']?.toString() ?? '',
+      cartonSourceBarcode: map['carton_source_barcode']?.toString() ?? '',
+      barcodeFormat: map['barcode_format']?.toString() ?? '',
       unitCode: map['unit_code']?.toString() ?? '',
       sequenceNumber: map['sequence_number'] as int? ?? 1,
       sourceBarcode: map['source_barcode']?.toString() ?? '',
@@ -342,8 +366,20 @@ class UnitRecord {
   final int lotId;
   final int productId;
   final String productName;
+  final String productSku;
+  final String productType;
+  final String gtin;
+  final String catalogNumber;
+  final String abbottListNo;
+  final String mohCode;
+  final String department;
+  final String deviceName;
+  final String storageLocation;
   final String lotNumber;
+  final DateTime? receivedAt;
   final String cartonCode;
+  final String cartonSourceBarcode;
+  final String barcodeFormat;
   final String unitCode;
   final int sequenceNumber;
   final String sourceBarcode;

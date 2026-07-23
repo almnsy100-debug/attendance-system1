@@ -3,11 +3,12 @@ import 'dart:convert';
 import 'package:sqflite/sqflite.dart';
 
 import 'inventory_models.dart';
+import 'product_catalog_seed.dart';
 
 class InventoryRepository {
   InventoryRepository(this.database);
 
-  static const int schemaVersion = 6;
+  static const int schemaVersion = 7;
 
   final Database database;
 
@@ -239,6 +240,7 @@ class InventoryRepository {
 
     await _migrateLegacyMaterials(db);
     await _syncCatalogFromProducts(db);
+    await _seedBundledProductCatalog(db);
 
     if (await _hasColumn(db, 'usage_records', 'unit_id')) {
       await db.execute('''
@@ -352,6 +354,21 @@ class InventoryRepository {
     ''',
       <Object?>[_now()],
     );
+  }
+
+  static Future<void> _seedBundledProductCatalog(Database db) async {
+    final Batch batch = db.batch();
+    for (final Map<String, String> row in bundledProductCatalog) {
+      batch.insert('product_catalog', <String, Object?>{
+        'name': row['name'],
+        'abbott_list_no': row['abbott_list_no'],
+        'moh_code': row['moh_code'],
+        'source_file': 'اسماء المواد.xlsx (bundled)',
+        'imported_at': _now(),
+        'imported_by': null,
+      }, conflictAlgorithm: ConflictAlgorithm.replace);
+    }
+    await batch.commit(noResult: true);
   }
 
   static int _inferredAfterOpenDays(Map<String, Object?> material) {
@@ -674,6 +691,7 @@ class InventoryRepository {
     required DateTime? manufacturerExpiry,
     required String cartonCode,
     required int unitCount,
+    required double quantityPerUnit,
     required ProductCatalogRecord catalogEntry,
     required String materialType,
     required String department,
@@ -684,7 +702,7 @@ class InventoryRepository {
     required int stabilityValue,
     required String stabilityPeriod,
   }) async {
-    if (unitCount < 1 || unitCount > 1000) {
+    if (unitCount < 1 || unitCount > 1000 || quantityPerUnit <= 0) {
       throw ArgumentError('INVALID_UNIT_COUNT');
     }
     if (stabilityEnabled &&
@@ -827,7 +845,7 @@ class InventoryRepository {
           'sequence_number': index,
           'source_barcode': unitCode,
           'serial_number': unitCode,
-          'original_quantity': 1,
+          'original_quantity': quantityPerUnit,
           'used_quantity': 0,
           'measure_unit': measureUnit,
           'status': 'sealed',
@@ -845,6 +863,7 @@ class InventoryRepository {
           'lot_id': lotId,
           'carton_code': cartonCode,
           'unit_count': unitCount,
+          'quantity_per_unit': quantityPerUnit,
           'raw_barcode': rawBarcode,
         }),
         'performed_by': actorId,
@@ -1117,8 +1136,13 @@ class InventoryRepository {
   Future<List<UnitRecord>> units(int cartonId) async {
     final List<Map<String, Object?>> rows = await database.rawQuery(
       '''
-      SELECT u.*, c.lot_id, c.carton_code, l.product_id, l.lot_number,
-        l.manufacturer_expiry, p.name AS product_name,
+      SELECT u.*, c.lot_id, c.carton_code,
+        c.source_barcode AS carton_source_barcode, c.barcode_format,
+        l.product_id, l.lot_number, l.manufacturer_expiry, l.received_at,
+        p.name AS product_name, p.sku AS product_sku,
+        p.type AS product_type, p.gtin,
+        p.catalog_number, p.abbott_list_no, p.moh_code, p.department,
+        p.device_name, p.storage_location,
         p.after_open_days, p.stability_enabled, p.stability_value,
         p.stability_period
       FROM units u
@@ -1133,11 +1157,38 @@ class InventoryRepository {
     return rows.map(UnitRecord.fromMap).toList();
   }
 
+  Future<List<UnitRecord>> allUnits() async {
+    final List<Map<String, Object?>> rows = await database.rawQuery('''
+      SELECT u.*, c.lot_id, c.carton_code,
+        c.source_barcode AS carton_source_barcode, c.barcode_format,
+        l.product_id, l.lot_number, l.manufacturer_expiry, l.received_at,
+        p.name AS product_name, p.sku AS product_sku,
+        p.type AS product_type, p.gtin,
+        p.catalog_number, p.abbott_list_no, p.moh_code, p.department,
+        p.device_name, p.storage_location,
+        p.after_open_days, p.stability_enabled, p.stability_value,
+        p.stability_period
+      FROM units u
+      JOIN cartons c ON c.id = u.carton_id
+      JOIN lots l ON l.id = c.lot_id
+      JOIN products p ON p.id = l.product_id
+      WHERE p.is_archived = 0
+        AND u.status NOT IN ('disposed', 'archived')
+      ORDER BY u.created_at DESC, u.id DESC
+    ''');
+    return rows.map(UnitRecord.fromMap).toList();
+  }
+
   Future<UnitRecord?> unitById(int unitId) async {
     final List<Map<String, Object?>> rows = await database.rawQuery(
       '''
-      SELECT u.*, c.lot_id, c.carton_code, l.product_id, l.lot_number,
-        l.manufacturer_expiry, p.name AS product_name,
+      SELECT u.*, c.lot_id, c.carton_code,
+        c.source_barcode AS carton_source_barcode, c.barcode_format,
+        l.product_id, l.lot_number, l.manufacturer_expiry, l.received_at,
+        p.name AS product_name, p.sku AS product_sku,
+        p.type AS product_type, p.gtin,
+        p.catalog_number, p.abbott_list_no, p.moh_code, p.department,
+        p.device_name, p.storage_location,
         p.after_open_days, p.stability_enabled, p.stability_value,
         p.stability_period
       FROM units u
@@ -1155,8 +1206,13 @@ class InventoryRepository {
     final String value = code.trim();
     final List<Map<String, Object?>> rows = await database.rawQuery(
       '''
-      SELECT u.*, c.lot_id, c.carton_code, l.product_id, l.lot_number,
-        l.manufacturer_expiry, p.name AS product_name,
+      SELECT u.*, c.lot_id, c.carton_code,
+        c.source_barcode AS carton_source_barcode, c.barcode_format,
+        l.product_id, l.lot_number, l.manufacturer_expiry, l.received_at,
+        p.name AS product_name, p.sku AS product_sku,
+        p.type AS product_type, p.gtin,
+        p.catalog_number, p.abbott_list_no, p.moh_code, p.department,
+        p.device_name, p.storage_location,
         p.after_open_days, p.stability_enabled, p.stability_value,
         p.stability_period
       FROM units u
@@ -1174,8 +1230,13 @@ class InventoryRepository {
   Future<UnitRecord?> blockingPreviousUnit(int unitId) async {
     final List<Map<String, Object?>> rows = await database.rawQuery(
       '''
-      SELECT previous.*, c.lot_id, c.carton_code, l.product_id, l.lot_number,
-        l.manufacturer_expiry, p.name AS product_name,
+      SELECT previous.*, c.lot_id, c.carton_code,
+        c.source_barcode AS carton_source_barcode, c.barcode_format,
+        l.product_id, l.lot_number, l.manufacturer_expiry, l.received_at,
+        p.name AS product_name, p.sku AS product_sku,
+        p.type AS product_type, p.gtin,
+        p.catalog_number, p.abbott_list_no, p.moh_code, p.department,
+        p.device_name, p.storage_location,
         p.after_open_days, p.stability_enabled, p.stability_value,
         p.stability_period
       FROM units current
@@ -1272,8 +1333,13 @@ class InventoryRepository {
     await database.transaction((Transaction transaction) async {
       final List<Map<String, Object?>> rows = await transaction.rawQuery(
         '''
-        SELECT u.*, c.lot_id, c.carton_code, l.product_id, l.lot_number,
-          l.manufacturer_expiry, p.name AS product_name, p.after_open_days,
+        SELECT u.*, c.lot_id, c.carton_code,
+          c.source_barcode AS carton_source_barcode, c.barcode_format,
+          l.product_id, l.lot_number, l.manufacturer_expiry, l.received_at,
+          p.name AS product_name, p.sku AS product_sku,
+          p.type AS product_type, p.gtin,
+          p.catalog_number, p.abbott_list_no, p.moh_code, p.department,
+          p.device_name, p.storage_location, p.after_open_days,
           p.stability_enabled, p.stability_value, p.stability_period
         FROM units u
         JOIN cartons c ON c.id = u.carton_id
@@ -1288,10 +1354,14 @@ class InventoryRepository {
       if (enforceSequence) {
         final List<Map<String, Object?>> blockers = await transaction.rawQuery(
           '''
-          SELECT previous.*, c.lot_id, c.carton_code, l.product_id,
-            l.lot_number, l.manufacturer_expiry, p.name AS product_name,
-            p.after_open_days, p.stability_enabled, p.stability_value,
-            p.stability_period
+          SELECT previous.*, c.lot_id, c.carton_code,
+            c.source_barcode AS carton_source_barcode, c.barcode_format,
+            l.product_id, l.lot_number, l.manufacturer_expiry, l.received_at,
+            p.name AS product_name, p.sku AS product_sku,
+            p.type AS product_type, p.gtin,
+            p.catalog_number, p.abbott_list_no, p.moh_code, p.department,
+            p.device_name, p.storage_location, p.after_open_days,
+            p.stability_enabled, p.stability_value, p.stability_period
           FROM units current
           JOIN units previous ON previous.carton_id = current.carton_id
             AND previous.sequence_number < current.sequence_number

@@ -1860,9 +1860,12 @@ class HomeScreen extends StatelessWidget {
       return;
     }
 
-    final UnitRecord? hierarchyUnit = await controller.inventory.findUnit(
-      scan.rawValue,
-    );
+    final ParsedGs1 parsed = parseGs1(scan.rawValue);
+    final UnitRecord? hierarchyUnit =
+        await controller.inventory.findUnit(scan.rawValue) ??
+        (parsed.serial.isEmpty
+            ? null
+            : await controller.inventory.findUnit(parsed.serial));
 
     if (hierarchyUnit != null) {
       final ProductRecord? product = await controller.inventory.productById(
@@ -1888,9 +1891,11 @@ class HomeScreen extends StatelessWidget {
       }
     }
 
-    final CartonRecord? hierarchyCarton = await controller.inventory.findCarton(
-      scan.rawValue,
-    );
+    final CartonRecord? hierarchyCarton =
+        await controller.inventory.findCarton(scan.rawValue) ??
+        (parsed.serial.isEmpty
+            ? null
+            : await controller.inventory.findCarton(parsed.serial));
     if (hierarchyCarton != null) {
       final ProductRecord? product = await controller.inventory.productById(
         hierarchyCarton.productId,
@@ -1916,8 +1921,6 @@ class HomeScreen extends StatelessWidget {
         return;
       }
     }
-
-    final ParsedGs1 parsed = parseGs1(scan.rawValue);
 
     final MaterialRecord? existing = await controller.db.findMaterial(
       rawBarcode: scan.rawValue,
@@ -2012,6 +2015,27 @@ class HomeScreen extends StatelessWidget {
     controller.refresh();
   }
 
+  Future<void> openHierarchyInventory(
+    BuildContext context,
+    InventoryUnitFilter filter,
+    String title,
+  ) async {
+    final UserRecord user = controller.currentUser!;
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder:
+            (_) => InventoryUnitListScreen(
+              repository: controller.inventory,
+              actorId: user.id,
+              canManage: user.isSuperAdmin,
+              filter: filter,
+              title: title,
+            ),
+      ),
+    );
+    controller.refresh();
+  }
+
   @override
   Widget build(BuildContext context) {
     final AppLocalizations text = AppLocalizations.of(context);
@@ -2038,32 +2062,37 @@ class HomeScreen extends StatelessWidget {
           ),
         ],
       ),
-      body: FutureBuilder<List<MaterialRecord>>(
+      body: FutureBuilder<List<UnitRecord>>(
         key: ValueKey<int>(controller.revision),
-        future: controller.db.materials(),
+        future: controller.inventory.allUnits(),
         builder: (
           BuildContext context,
-          AsyncSnapshot<List<MaterialRecord>> snapshot,
+          AsyncSnapshot<List<UnitRecord>> snapshot,
         ) {
           if (!snapshot.hasData) {
             return const Center(child: CircularProgressIndicator());
           }
 
-          final List<MaterialRecord> materials = snapshot.data!;
-
-          final int total =
-              materials.where((MaterialRecord item) => !item.isArchived).length;
-
+          final List<UnitRecord> units = snapshot.data!;
+          final int total = units.length;
           final int available =
-              materials.where((MaterialRecord item) => item.isAvailable).length;
-
-          final int expired =
-              materials
-                  .where((MaterialRecord item) => item.isExpiredOrEmpty)
+              units
+                  .where((UnitRecord unit) => !unit.isEmpty && !unit.isExpired)
                   .length;
-
+          final int expired =
+              units
+                  .where((UnitRecord unit) => unit.isEmpty || unit.isExpired)
+                  .length;
           final int unused =
-              materials.where((MaterialRecord item) => item.isUnused).length;
+              units
+                  .where(
+                    (UnitRecord unit) =>
+                        !unit.isEmpty &&
+                        !unit.isExpired &&
+                        !unit.isOpened &&
+                        unit.usedQuantity <= 0,
+                  )
+                  .length;
 
           return ListView(
             padding: const EdgeInsets.all(16),
@@ -2087,7 +2116,11 @@ class HomeScreen extends StatelessWidget {
                     value: total,
                     color: Colors.blue,
                     onTap: () {
-                      openInventory(context, MaterialFilter.all);
+                      openHierarchyInventory(
+                        context,
+                        InventoryUnitFilter.all,
+                        text.totalMaterials,
+                      );
                     },
                   ),
                   SummaryCard(
@@ -2095,7 +2128,11 @@ class HomeScreen extends StatelessWidget {
                     value: unused,
                     color: Colors.blueGrey,
                     onTap: () {
-                      openInventory(context, MaterialFilter.unused);
+                      openHierarchyInventory(
+                        context,
+                        InventoryUnitFilter.unused,
+                        text.unused,
+                      );
                     },
                   ),
                   SummaryCard(
@@ -2103,7 +2140,11 @@ class HomeScreen extends StatelessWidget {
                     value: available,
                     color: Colors.green,
                     onTap: () {
-                      openInventory(context, MaterialFilter.available);
+                      openHierarchyInventory(
+                        context,
+                        InventoryUnitFilter.available,
+                        text.available,
+                      );
                     },
                   ),
                   SummaryCard(
@@ -2111,7 +2152,11 @@ class HomeScreen extends StatelessWidget {
                     value: expired,
                     color: Colors.red,
                     onTap: () {
-                      openInventory(context, MaterialFilter.expiredOrEmpty);
+                      openHierarchyInventory(
+                        context,
+                        InventoryUnitFilter.expiredOrEmpty,
+                        text.expiredOrEmpty,
+                      );
                     },
                   ),
                 ],
@@ -2152,7 +2197,11 @@ class HomeScreen extends StatelessWidget {
               const SizedBox(height: 10),
               OutlinedButton.icon(
                 onPressed: () {
-                  openInventory(context, MaterialFilter.all);
+                  openHierarchyInventory(
+                    context,
+                    InventoryUnitFilter.all,
+                    text.inventory,
+                  );
                 },
                 icon: const Icon(Icons.inventory_2),
                 label: Padding(

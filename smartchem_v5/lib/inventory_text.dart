@@ -121,4 +121,6 @@ class InventoryText {
     'Label generated and sent to printing',
   );
   String get scanUnit => value('مسح علبة', 'Scan unit');
+  String get downloadPdf => value('تنزيل PDF', 'Download PDF');
+  String get downloadExcel => value('تنزيل Excel', 'Download Excel');
 }

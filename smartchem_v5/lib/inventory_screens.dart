@@ -3,10 +3,182 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:printing/printing.dart';
 
+import 'inventory_export_service.dart';
 import 'inventory_models.dart';
 import 'inventory_repository.dart';
 import 'inventory_text.dart';
 import 'label_service.dart';
+
+enum InventoryUnitFilter { all, available, unused, expiredOrEmpty }
+
+class InventoryUnitListScreen extends StatefulWidget {
+  const InventoryUnitListScreen({
+    super.key,
+    required this.repository,
+    required this.actorId,
+    required this.canManage,
+    required this.filter,
+    required this.title,
+  });
+
+  final InventoryRepository repository;
+  final int actorId;
+  final bool canManage;
+  final InventoryUnitFilter filter;
+  final String title;
+
+  @override
+  State<InventoryUnitListScreen> createState() =>
+      _InventoryUnitListScreenState();
+}
+
+class _InventoryUnitListScreenState extends State<InventoryUnitListScreen> {
+  int revision = 0;
+  bool exporting = false;
+
+  bool _matches(UnitRecord unit) {
+    return switch (widget.filter) {
+      InventoryUnitFilter.all => true,
+      InventoryUnitFilter.available => !unit.isEmpty && !unit.isExpired,
+      InventoryUnitFilter.unused =>
+        !unit.isEmpty &&
+            !unit.isExpired &&
+            !unit.isOpened &&
+            unit.usedQuantity <= 0,
+      InventoryUnitFilter.expiredOrEmpty => unit.isEmpty || unit.isExpired,
+    };
+  }
+
+  Future<void> _exportPdf(List<UnitRecord> units) async {
+    if (units.isEmpty) return;
+    setState(() => exporting = true);
+    try {
+      final Uint8List bytes = await InventoryExportService.pdfBytes(units);
+      await Printing.sharePdf(
+        bytes: bytes,
+        filename: 'SmartChem-Inventory.pdf',
+      );
+    } catch (error) {
+      if (mounted) _showError(context, error);
+    } finally {
+      if (mounted) setState(() => exporting = false);
+    }
+  }
+
+  Future<void> _exportExcel(List<UnitRecord> units) async {
+    if (units.isEmpty) return;
+    setState(() => exporting = true);
+    try {
+      await InventoryExportService.shareExcel(
+        units,
+        filename: 'SmartChem-Inventory.xlsx',
+      );
+    } catch (error) {
+      if (mounted) _showError(context, error);
+    } finally {
+      if (mounted) setState(() => exporting = false);
+    }
+  }
+
+  Future<void> _openUnit(UnitRecord unit) async {
+    final ProductRecord? product = await widget.repository.productById(
+      unit.productId,
+    );
+    if (!mounted || product == null) return;
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder:
+            (_) => UnitDetailsScreen(
+              repository: widget.repository,
+              actorId: widget.actorId,
+              canManage: widget.canManage,
+              product: product,
+              unitId: unit.id,
+            ),
+      ),
+    );
+    if (mounted) setState(() => revision++);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final InventoryText text = InventoryText(context);
+    return FutureBuilder<List<UnitRecord>>(
+      key: ValueKey<int>(revision),
+      future: widget.repository.allUnits(),
+      builder: (
+        BuildContext context,
+        AsyncSnapshot<List<UnitRecord>> snapshot,
+      ) {
+        final List<UnitRecord> units =
+            snapshot.data?.where(_matches).toList() ?? <UnitRecord>[];
+        return Scaffold(
+          appBar: AppBar(
+            title: Text(widget.title),
+            actions:
+                widget.canManage && snapshot.hasData
+                    ? <Widget>[
+                      IconButton(
+                        tooltip: text.downloadPdf,
+                        onPressed: exporting ? null : () => _exportPdf(units),
+                        icon: const Icon(Icons.picture_as_pdf),
+                      ),
+                      IconButton(
+                        tooltip: text.downloadExcel,
+                        onPressed: exporting ? null : () => _exportExcel(units),
+                        icon: const Icon(Icons.table_view),
+                      ),
+                    ]
+                    : null,
+          ),
+          body:
+              snapshot.hasError
+                  ? _ErrorView(error: snapshot.error)
+                  : !snapshot.hasData
+                  ? const Center(child: CircularProgressIndicator())
+                  : units.isEmpty
+                  ? Center(child: Text(text.noData))
+                  : ListView.separated(
+                    padding: const EdgeInsets.all(12),
+                    itemCount: units.length,
+                    separatorBuilder: (_, _) => const SizedBox(height: 6),
+                    itemBuilder: (BuildContext context, int index) {
+                      final UnitRecord unit = units[index];
+                      return Card(
+                        child: ListTile(
+                          leading: Icon(
+                            unit.isExpired || unit.isEmpty
+                                ? Icons.warning_amber
+                                : unit.isOpened
+                                ? Icons.lock_open
+                                : Icons.inventory_2_outlined,
+                            color:
+                                unit.isExpired || unit.isEmpty
+                                    ? Colors.red
+                                    : unit.isOpened
+                                    ? Colors.orange
+                                    : Colors.green,
+                          ),
+                          title: Text(unit.productName),
+                          subtitle: Text(
+                            '${unit.unitCode}\n'
+                            'LOT ${unit.lotNumber} • '
+                            '${text.remaining}: ${unit.remainingQuantity} '
+                            '${unit.measureUnit} • '
+                            '${text.storage}: ${unit.storageLocation}',
+                          ),
+                          isThreeLine: true,
+                          trailing: const Icon(Icons.chevron_right),
+                          onTap: () => _openUnit(unit),
+                        ),
+                      );
+                    },
+                  ),
+        );
+      },
+    );
+  }
+}
 
 class ProductInventoryScreen extends StatefulWidget {
   const ProductInventoryScreen({
@@ -30,14 +202,15 @@ class _ProductInventoryScreenState extends State<ProductInventoryScreen> {
   void refresh() => setState(() => revision++);
 
   Future<void> editProduct([ProductRecord? product]) async {
-    final bool? saved = await showDialog<bool>(
-      context: context,
-      builder:
-          (BuildContext context) => _ProductDialog(
-            repository: widget.repository,
-            actorId: widget.actorId,
-            product: product,
-          ),
+    final bool? saved = await Navigator.of(context).push<bool>(
+      MaterialPageRoute<bool>(
+        builder:
+            (BuildContext context) => _ProductDialog(
+              repository: widget.repository,
+              actorId: widget.actorId,
+              product: product,
+            ),
+      ),
     );
     if (saved == true) refresh();
   }
@@ -245,109 +418,115 @@ class _ProductDialogState extends State<_ProductDialog> {
   @override
   Widget build(BuildContext context) {
     final InventoryText text = InventoryText(context);
-    return AlertDialog(
-      title: Text(widget.product == null ? text.addProduct : text.editProduct),
-      content: SizedBox(
-        width: 520,
-        child: Form(
-          key: formKey,
-          child: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children:
-                  <Widget>[
-                        _field(sku, text.sku, required: true),
-                        _field(name, text.name, required: true),
-                        _field(type, text.type),
-                        _field(gtin, text.gtin),
-                        _field(catalog, text.catalog),
-                        _field(abbottListNo, text.abbottListNo),
-                        _field(mohCode, text.mohCode),
-                        _field(manufacturer, text.manufacturer),
-                        _field(department, text.department),
-                        _field(device, text.device),
-                        _field(storage, text.storage),
-                        _field(measureUnit, text.measureUnit, required: true),
-                        SwitchListTile(
-                          contentPadding: EdgeInsets.zero,
-                          value: stabilityEnabled,
-                          title: Text(text.stabilityOption),
-                          onChanged:
-                              (bool value) =>
-                                  setState(() => stabilityEnabled = value),
-                        ),
-                        if (stabilityEnabled) ...<Widget>[
-                          TextFormField(
-                            controller: stabilityValue,
-                            keyboardType: TextInputType.number,
-                            decoration: InputDecoration(
-                              labelText: text.stabilityDuration,
-                            ),
-                            validator: (String? value) {
-                              final int? duration = int.tryParse(value ?? '');
-                              return duration == null || duration <= 0
-                                  ? text.invalidNumber
-                                  : null;
-                            },
-                          ),
-                          DropdownButtonFormField<String>(
-                            initialValue: stabilityPeriod,
-                            decoration: InputDecoration(
-                              labelText: text.stabilityPeriod,
-                            ),
-                            items: <DropdownMenuItem<String>>[
-                              DropdownMenuItem(
-                                value: 'hour',
-                                child: Text(text.hour),
-                              ),
-                              DropdownMenuItem(
-                                value: 'day',
-                                child: Text(text.day),
-                              ),
-                              DropdownMenuItem(
-                                value: 'week',
-                                child: Text(text.week),
-                              ),
-                              DropdownMenuItem(
-                                value: 'month',
-                                child: Text(text.month),
-                              ),
-                            ],
-                            onChanged: (String? value) {
-                              if (value != null) {
-                                setState(() => stabilityPeriod = value);
-                              }
-                            },
-                          ),
-                        ],
-                      ]
-                      .expand(
-                        (Widget child) => <Widget>[
-                          child,
-                          const SizedBox(height: 10),
-                        ],
-                      )
-                      .toList(),
-            ),
-          ),
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(
+          widget.product == null ? text.addProduct : text.editProduct,
         ),
       ),
-      actions: <Widget>[
-        TextButton(
-          onPressed: busy ? null : () => Navigator.of(context).pop(false),
-          child: Text(text.cancel),
-        ),
-        FilledButton(
-          onPressed: busy ? null : save,
-          child:
-              busy
-                  ? const SizedBox.square(
-                    dimension: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2),
+      body: Form(
+        key: formKey,
+        child: ListView(
+          padding: const EdgeInsets.all(16),
+          children:
+              <Widget>[
+                    _field(sku, text.sku, required: true),
+                    _field(name, text.name, required: true),
+                    _field(type, text.type),
+                    _field(gtin, text.gtin),
+                    _field(catalog, text.catalog),
+                    _field(abbottListNo, text.abbottListNo),
+                    _field(mohCode, text.mohCode),
+                    _field(manufacturer, text.manufacturer),
+                    _field(department, text.department),
+                    _field(device, text.device),
+                    _field(storage, text.storage),
+                    _field(measureUnit, text.measureUnit, required: true),
+                    SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      value: stabilityEnabled,
+                      title: Text(text.stabilityOption),
+                      onChanged:
+                          (bool value) =>
+                              setState(() => stabilityEnabled = value),
+                    ),
+                    if (stabilityEnabled) ...<Widget>[
+                      TextFormField(
+                        controller: stabilityValue,
+                        keyboardType: TextInputType.number,
+                        decoration: InputDecoration(
+                          labelText: text.stabilityDuration,
+                        ),
+                        validator: (String? value) {
+                          final int? duration = int.tryParse(value ?? '');
+                          return duration == null || duration <= 0
+                              ? text.invalidNumber
+                              : null;
+                        },
+                      ),
+                      DropdownButtonFormField<String>(
+                        initialValue: stabilityPeriod,
+                        decoration: InputDecoration(
+                          labelText: text.stabilityPeriod,
+                        ),
+                        items: <DropdownMenuItem<String>>[
+                          DropdownMenuItem(
+                            value: 'hour',
+                            child: Text(text.hour),
+                          ),
+                          DropdownMenuItem(value: 'day', child: Text(text.day)),
+                          DropdownMenuItem(
+                            value: 'week',
+                            child: Text(text.week),
+                          ),
+                          DropdownMenuItem(
+                            value: 'month',
+                            child: Text(text.month),
+                          ),
+                        ],
+                        onChanged: (String? value) {
+                          if (value != null) {
+                            setState(() => stabilityPeriod = value);
+                          }
+                        },
+                      ),
+                    ],
+                  ]
+                  .expand(
+                    (Widget child) => <Widget>[
+                      child,
+                      const SizedBox(height: 10),
+                    ],
                   )
-                  : Text(text.save),
+                  .toList(),
         ),
-      ],
+      ),
+      bottomNavigationBar: SafeArea(
+        minimum: const EdgeInsets.all(16),
+        child: Row(
+          children: <Widget>[
+            Expanded(
+              child: OutlinedButton(
+                onPressed: busy ? null : () => Navigator.of(context).pop(false),
+                child: Text(text.cancel),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: FilledButton(
+                onPressed: busy ? null : save,
+                child:
+                    busy
+                        ? const SizedBox.square(
+                          dimension: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                        : Text(text.save),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -758,6 +937,7 @@ class _CartonDialogState extends State<_CartonDialog> {
   final GlobalKey<FormState> formKey = GlobalKey<FormState>();
   final TextEditingController code = TextEditingController();
   final TextEditingController count = TextEditingController(text: '1');
+  final TextEditingController quantityPerUnit = TextEditingController();
   final TextEditingController otherMeasureUnit = TextEditingController();
   late String measureUnit;
   bool busy = false;
@@ -787,6 +967,7 @@ class _CartonDialogState extends State<_CartonDialog> {
   void dispose() {
     code.dispose();
     count.dispose();
+    quantityPerUnit.dispose();
     otherMeasureUnit.dispose();
     super.dispose();
   }
@@ -800,7 +981,7 @@ class _CartonDialogState extends State<_CartonDialog> {
         lotId: widget.lotId,
         cartonCode: code.text,
         unitCount: int.parse(count.text),
-        quantityPerUnit: 1,
+        quantityPerUnit: double.parse(quantityPerUnit.text),
         measureUnit:
             measureUnit == '__other__'
                 ? otherMeasureUnit.text.trim()
@@ -840,6 +1021,20 @@ class _CartonDialogState extends State<_CartonDialog> {
               validator: (String? value) {
                 final int? number = int.tryParse(value ?? '');
                 return number == null || number < 1 || number > 1000
+                    ? text.invalidNumber
+                    : null;
+              },
+            ),
+            const SizedBox(height: 10),
+            TextFormField(
+              controller: quantityPerUnit,
+              keyboardType: const TextInputType.numberWithOptions(
+                decimal: true,
+              ),
+              decoration: InputDecoration(labelText: text.quantityPerUnit),
+              validator: (String? value) {
+                final double? number = double.tryParse(value ?? '');
+                return number == null || number <= 0
                     ? text.invalidNumber
                     : null;
               },
@@ -921,13 +1116,14 @@ class _CartonDetailsScreenState extends State<CartonDetailsScreen> {
   int revision = 0;
   bool printing = false;
 
-  Future<void> printCarton(CartonRecord carton) async {
+  Future<void> printCarton(CartonRecord carton, List<UnitRecord> units) async {
     setState(() => printing = true);
     try {
       final Uint8List bytes = await InventoryLabelService.cartonLabel(
         product: widget.product,
         lot: widget.lot,
         carton: carton,
+        units: units,
       );
       final bool printed = await Printing.layoutPdf(
         name: 'SmartChem-Carton-${carton.cartonCode}',
@@ -942,6 +1138,37 @@ class _CartonDetailsScreenState extends State<CartonDetailsScreen> {
         );
         if (mounted) _showSuccess(context, InventoryText(context).labelQueued);
       }
+    } catch (error) {
+      if (mounted) _showError(context, error);
+    } finally {
+      if (mounted) setState(() => printing = false);
+    }
+  }
+
+  Future<void> downloadPdf(List<UnitRecord> units) async {
+    if (units.isEmpty) return;
+    setState(() => printing = true);
+    try {
+      final Uint8List bytes = await InventoryExportService.pdfBytes(units);
+      await Printing.sharePdf(
+        bytes: bytes,
+        filename: 'SmartChem-${units.first.cartonCode}.pdf',
+      );
+    } catch (error) {
+      if (mounted) _showError(context, error);
+    } finally {
+      if (mounted) setState(() => printing = false);
+    }
+  }
+
+  Future<void> downloadExcel(List<UnitRecord> units) async {
+    if (units.isEmpty) return;
+    setState(() => printing = true);
+    try {
+      await InventoryExportService.shareExcel(
+        units,
+        filename: 'SmartChem-${units.first.cartonCode}.xlsx',
+      );
     } catch (error) {
       if (mounted) _showError(context, error);
     } finally {
@@ -1011,9 +1238,50 @@ class _CartonDetailsScreenState extends State<CartonDetailsScreen> {
                           _InfoCard(
                             rows: <MapEntry<String, String>>[
                               MapEntry(text.product, widget.product.name),
+                              MapEntry(text.internalNumber, widget.product.sku),
+                              MapEntry(text.type, widget.product.type),
+                              MapEntry(text.gtin, widget.product.gtin),
+                              MapEntry(text.rawBarcode, carton.sourceBarcode),
+                              MapEntry('Barcode format', carton.barcodeFormat),
+                              MapEntry(
+                                text.abbottListNo,
+                                widget.product.abbottListNo,
+                              ),
+                              MapEntry(text.mohCode, widget.product.mohCode),
+                              MapEntry(
+                                text.catalog,
+                                widget.product.catalogNumber,
+                              ),
                               MapEntry(text.lot, widget.lot.lotNumber),
+                              MapEntry(
+                                text.receivedAt,
+                                _date(widget.lot.receivedAt),
+                              ),
+                              MapEntry(
+                                text.manufacturerExpiry,
+                                _date(widget.lot.manufacturerExpiry),
+                              ),
+                              MapEntry(
+                                text.department,
+                                widget.product.department,
+                              ),
+                              MapEntry(text.device, widget.product.deviceName),
+                              MapEntry(
+                                text.storage,
+                                widget.product.storageLocation,
+                              ),
                               MapEntry(text.cartonCode, carton.cartonCode),
                               MapEntry(text.unitCount, units.length.toString()),
+                              if (units.isNotEmpty)
+                                MapEntry(
+                                  text.quantityPerUnit,
+                                  '${units.first.originalQuantity} '
+                                  '${units.first.measureUnit}',
+                                ),
+                              MapEntry(
+                                text.stabilityPeriod,
+                                _stabilityText(widget.product, text),
+                              ),
                             ],
                           ),
                           const SizedBox(height: 10),
@@ -1026,7 +1294,7 @@ class _CartonDetailsScreenState extends State<CartonDetailsScreen> {
                                   onPressed:
                                       printing
                                           ? null
-                                          : () => printCarton(carton),
+                                          : () => printCarton(carton, units),
                                   icon: const Icon(Icons.print),
                                   label: Text(text.printCarton),
                                 ),
@@ -1035,6 +1303,22 @@ class _CartonDetailsScreenState extends State<CartonDetailsScreen> {
                                       printing ? null : () => printUnits(units),
                                   icon: const Icon(Icons.print_outlined),
                                   label: Text(text.printUnits),
+                                ),
+                                OutlinedButton.icon(
+                                  onPressed:
+                                      printing
+                                          ? null
+                                          : () => downloadPdf(units),
+                                  icon: const Icon(Icons.picture_as_pdf),
+                                  label: Text(text.downloadPdf),
+                                ),
+                                OutlinedButton.icon(
+                                  onPressed:
+                                      printing
+                                          ? null
+                                          : () => downloadExcel(units),
+                                  icon: const Icon(Icons.table_view),
+                                  label: Text(text.downloadExcel),
                                 ),
                               ],
                             ),
@@ -1279,12 +1563,39 @@ class _UnitDetailsScreenState extends State<UnitDetailsScreen> {
                       _InfoCard(
                         rows: <MapEntry<String, String>>[
                           MapEntry(text.product, unit.productName),
+                          MapEntry(text.internalNumber, unit.productSku),
+                          MapEntry(text.type, unit.productType),
+                          MapEntry(text.gtin, unit.gtin),
+                          MapEntry(text.rawBarcode, unit.cartonSourceBarcode),
+                          MapEntry('Barcode format', unit.barcodeFormat),
+                          MapEntry(text.abbottListNo, unit.abbottListNo),
+                          MapEntry(text.mohCode, unit.mohCode),
+                          MapEntry(text.catalog, unit.catalogNumber),
                           MapEntry(text.lot, unit.lotNumber),
+                          MapEntry(text.receivedAt, _date(unit.receivedAt)),
+                          MapEntry(
+                            text.manufacturerExpiry,
+                            _date(unit.manufacturerExpiry),
+                          ),
+                          MapEntry(text.department, unit.department),
+                          MapEntry(text.device, unit.deviceName),
+                          MapEntry(text.storage, unit.storageLocation),
                           MapEntry(text.cartonCode, unit.cartonCode),
                           MapEntry(text.unit, unit.unitCode),
                           MapEntry(
+                            text.quantityPerUnit,
+                            '${unit.originalQuantity} ${unit.measureUnit}',
+                          ),
+                          MapEntry(
                             text.remaining,
                             '${unit.remainingQuantity} ${unit.measureUnit}',
+                          ),
+                          MapEntry(
+                            text.stabilityPeriod,
+                            unit.stabilityEnabled
+                                ? '${unit.stabilityValue} '
+                                    '${unit.stabilityPeriod}'
+                                : text.disabled,
                           ),
                           MapEntry(text.openedAt, _dateTime(unit.openedAt)),
                           MapEntry(

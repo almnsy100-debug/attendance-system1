@@ -1,7 +1,3 @@
-import 'dart:typed_data';
-
-import 'package:excel/excel.dart' as xls;
-import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 
 import 'inventory_models.dart';
@@ -43,6 +39,7 @@ class _InventoryIntakeScreenState extends State<InventoryIntakeScreen> {
   final TextEditingController abbottListNo = TextEditingController();
   final TextEditingController mohCode = TextEditingController();
   final TextEditingController unitCount = TextEditingController();
+  final TextEditingController quantityPerUnit = TextEditingController();
   final TextEditingController stabilityValue = TextEditingController();
   final TextEditingController otherType = TextEditingController();
   final TextEditingController otherDepartment = TextEditingController();
@@ -104,6 +101,7 @@ class _InventoryIntakeScreenState extends State<InventoryIntakeScreen> {
       abbottListNo,
       mohCode,
       unitCount,
+      quantityPerUnit,
       stabilityValue,
       otherType,
       otherDepartment,
@@ -228,110 +226,6 @@ class _InventoryIntakeScreenState extends State<InventoryIntakeScreen> {
     setState(() => cartonCode.text = code);
   }
 
-  String _normalizeHeader(String value) {
-    return value.trim().toLowerCase().replaceAll(RegExp(r'[\s_\-./#():]+'), '');
-  }
-
-  Future<void> _importCatalog() async {
-    const XTypeGroup excelTypeGroup = XTypeGroup(
-      label: 'Excel workbook',
-      extensions: <String>['xlsx'],
-      mimeTypes: <String>[
-        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-      ],
-    );
-    final XFile? selectedFile = await openFile(
-      acceptedTypeGroups: <XTypeGroup>[excelTypeGroup],
-    );
-    if (selectedFile == null) return;
-
-    try {
-      final Uint8List bytes = await selectedFile.readAsBytes();
-      final xls.Excel workbook = xls.Excel.decodeBytes(bytes);
-      if (workbook.tables.isEmpty) throw StateError('EMPTY_EXCEL_FILE');
-      final xls.Sheet sheet = workbook.tables.values.first;
-      if (sheet.rows.isEmpty) throw StateError('EMPTY_EXCEL_FILE');
-      final List<String> headers =
-          sheet.rows.first
-              .map(
-                (xls.Data? cell) =>
-                    _normalizeHeader(cell?.value.toString() ?? ''),
-              )
-              .toList();
-
-      int column(List<String> aliases) {
-        final Set<String> normalized = aliases.map(_normalizeHeader).toSet();
-        return headers.indexWhere(normalized.contains);
-      }
-
-      final int nameIndex = column(<String>[
-        'Material Name',
-        'Product Name',
-        'Name',
-        'Item Description',
-        'Description',
-        'اسم المادة',
-        'المادة',
-      ]);
-      final int abbottIndex = column(<String>[
-        'Abbott List No',
-        'Abbott List Number',
-        'Abbott No',
-        'List No',
-        'List Number',
-      ]);
-      final int mohIndex = column(<String>[
-        'MOH Code',
-        'MOH Number',
-        'Ministry of Health Code',
-        'كود وزارة الصحة',
-        'رمز وزارة الصحة',
-      ]);
-      if (nameIndex < 0) throw StateError('MATERIAL_NAME_COLUMN_NOT_FOUND');
-
-      String valueAt(List<xls.Data?> row, int index) {
-        if (index < 0 || index >= row.length) return '';
-        return row[index]?.value.toString().trim() ?? '';
-      }
-
-      final List<Map<String, String>> rows = <Map<String, String>>[];
-      for (int index = 1; index < sheet.rows.length; index++) {
-        final List<xls.Data?> row = sheet.rows[index];
-        final String name = valueAt(row, nameIndex);
-        if (name.isEmpty) continue;
-        rows.add(<String, String>{
-          'name': name,
-          'abbott_list_no': valueAt(row, abbottIndex),
-          'moh_code': valueAt(row, mohIndex),
-        });
-      }
-      if (rows.isEmpty) throw StateError('NO_VALID_MATERIAL_ROWS');
-      final int imported = await widget.repository.importProductCatalog(
-        actorId: widget.actorId,
-        sourceFile: selectedFile.name,
-        rows: rows,
-      );
-      final List<ProductCatalogRecord> entries =
-          await widget.repository.productCatalog();
-      if (!mounted) return;
-      setState(() {
-        catalog = entries;
-        selectedMaterial = null;
-        abbottListNo.clear();
-        mohCode.clear();
-      });
-      final InventoryText text = InventoryText(context);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('${text.importedRows}: $imported'),
-          backgroundColor: Colors.green,
-        ),
-      );
-    } catch (error) {
-      if (mounted) _showError(error);
-    }
-  }
-
   Future<void> _save() async {
     if (!(formKey.currentState?.validate() ?? false)) return;
     final ProductCatalogRecord? selected = selectedMaterial;
@@ -351,6 +245,7 @@ class _InventoryIntakeScreenState extends State<InventoryIntakeScreen> {
             manufacturerExpiry: widget.manufacturerExpiry,
             cartonCode: cartonCode.text,
             unitCount: int.parse(unitCount.text),
+            quantityPerUnit: double.parse(quantityPerUnit.text),
             catalogEntry: selected,
             materialType: _selected(materialType, otherType),
             department: _selected(department, otherDepartment),
@@ -384,6 +279,7 @@ class _InventoryIntakeScreenState extends State<InventoryIntakeScreen> {
 
   Widget _readOnly(String label, String value, {int maxLines = 1}) {
     return TextFormField(
+      key: ValueKey<String>('$label-$value'),
       initialValue: value,
       readOnly: true,
       maxLines: maxLines,
@@ -497,12 +393,6 @@ class _InventoryIntakeScreenState extends State<InventoryIntakeScreen> {
               ),
               const SizedBox(height: 8),
             ],
-            OutlinedButton.icon(
-              onPressed: saving ? null : _importCatalog,
-              icon: const Icon(Icons.upload_file),
-              label: Text(text.importCatalog),
-            ),
-            const SizedBox(height: 12),
             DropdownButtonFormField<ProductCatalogRecord>(
               key: ValueKey<int?>(selectedMaterial?.id),
               initialValue: selectedMaterial,
@@ -541,6 +431,20 @@ class _InventoryIntakeScreenState extends State<InventoryIntakeScreen> {
                 labelText: text.mohCode,
                 filled: true,
               ),
+            ),
+            const SizedBox(height: 10),
+            TextFormField(
+              controller: quantityPerUnit,
+              keyboardType: const TextInputType.numberWithOptions(
+                decimal: true,
+              ),
+              decoration: InputDecoration(labelText: text.quantityPerUnit),
+              validator: (String? value) {
+                final double? number = double.tryParse(value ?? '');
+                return number == null || number <= 0
+                    ? text.invalidNumber
+                    : null;
+              },
             ),
             const SizedBox(height: 10),
             _dropdown(

@@ -1,6 +1,9 @@
+import 'package:excel/excel.dart' as xls;
 import 'package:flutter_test/flutter_test.dart';
+import 'package:production/inventory_export_service.dart';
 import 'package:production/inventory_models.dart';
 import 'package:production/inventory_repository.dart';
+import 'package:production/label_service.dart';
 import 'package:sqflite/sqflite.dart' show Sqflite;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
@@ -78,8 +81,16 @@ void main() {
         Sqflite.firstIntValue(
           await database.rawQuery('SELECT COUNT(*) FROM product_catalog'),
         ),
-        1,
+        49,
       );
+      final Map<String, Object?> bundled =
+          (await database.query(
+            'product_catalog',
+            where: 'name = ?',
+            whereArgs: <Object?>['ALINITY C ALK PHOS 4000T'],
+          )).single;
+      expect(bundled['abbott_list_no'], '8P2020');
+      expect(bundled['moh_code'], '060R0072232');
 
       final Map<String, Object?> usage =
           (await database.query('usage_records')).single;
@@ -272,8 +283,10 @@ void main() {
           },
         ],
       );
-      final ProductCatalogRecord catalog =
-          (await repository.productCatalog()).single;
+      final ProductCatalogRecord catalog = (await repository.productCatalog())
+          .singleWhere(
+            (ProductCatalogRecord item) => item.name == 'Alinity Reagent',
+          );
       final InventoryIntakeResult result = await repository
           .createInventoryIntake(
             actorId: 1,
@@ -287,6 +300,7 @@ void main() {
             manufacturerExpiry: DateTime(2027, 1, 1),
             cartonCode: 'ALT2-84441UD00',
             unitCount: 4,
+            quantityPerUnit: 5,
             catalogEntry: catalog,
             materialType: 'Reagent',
             department: 'Chemistry',
@@ -321,9 +335,40 @@ void main() {
         4,
       ]);
       expect(
-        units.every((UnitRecord unit) => unit.originalQuantity == 1),
+        units.every((UnitRecord unit) => unit.originalQuantity == 5),
         isTrue,
       );
+      final List<UnitRecord> allUnits = await repository.allUnits();
+      expect(allUnits, hasLength(4));
+      expect(allUnits.first.productSku, 'SC-260101-0001');
+      expect(allUnits.first.gtin, '00380740150005');
+      expect(allUnits.first.catalogNumber, '09P9510');
+      expect(allUnits.first.abbottListNo, '09P95');
+      expect(allUnits.first.mohCode, 'MOH-100');
+      expect(allUnits.first.receivedAt, DateTime(2026, 1, 1));
+      expect(allUnits.first.storageLocation, 'Fridge #1');
+
+      final xls.Excel export = xls.Excel.decodeBytes(
+        InventoryExportService.excelBytes(units),
+      );
+      expect(export.tables['Inventory']?.rows, hasLength(5));
+      final List<int> pdf = await InventoryExportService.pdfBytes(units);
+      expect(String.fromCharCodes(pdf.take(4)), '%PDF');
+      final LotRecord lot = (await repository.lotById(result.lotId))!;
+      final CartonRecord carton =
+          (await repository.cartonById(result.cartonId))!;
+      final List<int> cartonLabel = await InventoryLabelService.cartonLabel(
+        product: product,
+        lot: lot,
+        carton: carton,
+        units: units,
+      );
+      expect(String.fromCharCodes(cartonLabel.take(4)), '%PDF');
+      final List<int> unitLabels = await InventoryLabelService.unitLabels(
+        product: product,
+        units: units,
+      );
+      expect(String.fromCharCodes(unitLabels.take(4)), '%PDF');
       expect(
         (await repository.findCarton('(01)00380740150005(10)LOT-A'))?.id,
         result.cartonId,
