@@ -1,0 +1,4760 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+import 'dart:math';
+import 'dart:typed_data';
+
+import 'package:crypto/crypto.dart';
+import 'package:excel/excel.dart' as xls;
+import 'package:file_selector/file_selector.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:intl/intl.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
+import 'package:path/path.dart' as path_util;
+import 'package:path_provider/path_provider.dart';
+import 'package:pdf/pdf.dart';
+import 'package:pdf/widgets.dart' as pw;
+import 'package:printing/printing.dart';
+import 'package:share_plus/share_plus.dart';
+import 'package:sqflite/sqflite.dart';
+
+import 'l10n/app_localizations.dart';
+import 'inventory_intake_screen.dart';
+import 'inventory_models.dart';
+import 'inventory_repository.dart';
+import 'inventory_screens.dart';
+import 'inventory_text.dart';
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  final AppController controller = AppController();
+  await controller.initialize();
+
+  runApp(SmartChemApp(controller: controller));
+}
+
+String isoNow() {
+  return DateTime.now().toIso8601String();
+}
+
+DateTime? parseDateValue(dynamic value) {
+  if (value == null) {
+    return null;
+  }
+
+  final String text = value.toString().trim();
+
+  if (text.isEmpty) {
+    return null;
+  }
+
+  return DateTime.tryParse(text);
+}
+
+String formatDate(DateTime? value, {bool includeTime = false}) {
+  if (value == null) {
+    return '-';
+  }
+
+  if (includeTime) {
+    return DateFormat('dd/MM/yyyy HH:mm').format(value);
+  }
+
+  return DateFormat('dd/MM/yyyy').format(value);
+}
+
+double numberValue(dynamic value) {
+  if (value is num) {
+    return value.toDouble();
+  }
+
+  return double.tryParse(value?.toString().trim() ?? '') ?? 0;
+}
+
+String normalizedDigits(String input) {
+  const String arabic = '٠١٢٣٤٥٦٧٨٩';
+  const String persian = '۰۱۲۳۴۵۶۷۸۹';
+
+  String result = input;
+
+  for (int index = 0; index < 10; index++) {
+    result = result.replaceAll(arabic[index], index.toString());
+
+    result = result.replaceAll(persian[index], index.toString());
+  }
+
+  return result;
+}
+
+class ParsedGs1 {
+  const ParsedGs1({
+    required this.raw,
+    required this.gtin,
+    required this.lot,
+    required this.expiryDate,
+    required this.serial,
+    required this.catalog,
+    required this.additional,
+  });
+
+  final String raw;
+  final String gtin;
+  final String lot;
+  final DateTime? expiryDate;
+  final String serial;
+  final String catalog;
+  final Map<String, String> additional;
+}
+
+DateTime? parseGs1Expiry(String input) {
+  final String value = normalizedDigits(input);
+
+  if (!RegExp(r'^\d{6}$').hasMatch(value)) {
+    return null;
+  }
+
+  final int year = 2000 + int.parse(value.substring(0, 2));
+
+  final int month = int.parse(value.substring(2, 4));
+
+  int day = int.parse(value.substring(4, 6));
+
+  if (month < 1 || month > 12) {
+    return null;
+  }
+
+  final int lastDay = DateTime(year, month + 1, 0).day;
+
+  if (day == 0) {
+    day = lastDay;
+  }
+
+  if (day < 1 || day > lastDay) {
+    return null;
+  }
+
+  return DateTime(year, month, day);
+}
+
+String _parenthesizedValue(String raw, String ai) {
+  final RegExp expression = RegExp(
+    '\\($ai\\)(.*?)'
+    '(?=\\(\\d{2,4}\\)|\$)',
+    dotAll: true,
+  );
+
+  return expression.firstMatch(raw)?.group(1)?.trim() ?? '';
+}
+
+ParsedGs1 parseGs1(String input) {
+  String raw = input.trim();
+
+  raw = raw.replaceAll('<GS>', String.fromCharCode(29));
+
+  raw = raw.replaceFirst(RegExp(r'^\][dD]2'), '');
+
+  final Map<String, String> additional = <String, String>{};
+
+  String gtin = '';
+  String lot = '';
+  String serial = '';
+  String catalog = '';
+  DateTime? expiryDate;
+
+  if (raw.contains(RegExp(r'\(\d{2,4}\)'))) {
+    final RegExp expression = RegExp(r'\((\d{2,4})\)(.*?)(?=\(\d{2,4}\)|$)');
+
+    for (final RegExpMatch match in expression.allMatches(raw)) {
+      final String ai = match.group(1) ?? '';
+
+      final String value = match.group(2)?.trim() ?? '';
+
+      additional[ai] = value;
+    }
+
+    gtin = _parenthesizedValue(raw, '01');
+    lot = _parenthesizedValue(raw, '10');
+    serial = _parenthesizedValue(raw, '21');
+    catalog = _parenthesizedValue(raw, '240');
+
+    expiryDate = parseGs1Expiry(_parenthesizedValue(raw, '17'));
+  } else {
+    int index = 0;
+
+    String readVariable(int start) {
+      int end = start;
+
+      while (end < raw.length && raw.codeUnitAt(end) != 29) {
+        end++;
+      }
+
+      return raw.substring(start, end).trim();
+    }
+
+    while (index < raw.length) {
+      if (raw.codeUnitAt(index) == 29) {
+        index++;
+        continue;
+      }
+
+      if (raw.startsWith('01', index) && index + 16 <= raw.length) {
+        gtin = raw.substring(index + 2, index + 16);
+
+        additional['01'] = gtin;
+        index += 16;
+        continue;
+      }
+
+      if (raw.startsWith('17', index) && index + 8 <= raw.length) {
+        final String value = raw.substring(index + 2, index + 8);
+
+        expiryDate = parseGs1Expiry(value);
+        additional['17'] = value;
+        index += 8;
+        continue;
+      }
+
+      if (raw.startsWith('240', index)) {
+        catalog = readVariable(index + 3);
+        additional['240'] = catalog;
+
+        index += 3 + catalog.length;
+
+        if (index < raw.length && raw.codeUnitAt(index) == 29) {
+          index++;
+        }
+
+        continue;
+      }
+
+      if (raw.startsWith('21', index)) {
+        serial = readVariable(index + 2);
+        additional['21'] = serial;
+
+        index += 2 + serial.length;
+
+        if (index < raw.length && raw.codeUnitAt(index) == 29) {
+          index++;
+        }
+
+        continue;
+      }
+
+      if (raw.startsWith('10', index)) {
+        lot = readVariable(index + 2);
+        additional['10'] = lot;
+
+        index += 2 + lot.length;
+
+        if (index < raw.length && raw.codeUnitAt(index) == 29) {
+          index++;
+        }
+
+        continue;
+      }
+
+      index++;
+    }
+  }
+
+  return ParsedGs1(
+    raw: input,
+    gtin: gtin,
+    lot: lot,
+    expiryDate: expiryDate,
+    serial: serial,
+    catalog: catalog,
+    additional: additional,
+  );
+}
+
+class UserRecord {
+  const UserRecord({
+    required this.id,
+    required this.fullName,
+    required this.username,
+    required this.employeeNo,
+    required this.department,
+    required this.role,
+    required this.isActive,
+    required this.isArchived,
+    required this.createdAt,
+    required this.lastLogin,
+  });
+
+  factory UserRecord.fromMap(Map<String, Object?> map) {
+    return UserRecord(
+      id: map['id'] as int,
+      fullName: map['full_name']?.toString() ?? '',
+      username: map['username']?.toString() ?? '',
+      employeeNo: map['employee_no']?.toString() ?? '',
+      department: map['department']?.toString() ?? '',
+      role: map['role']?.toString() ?? 'user',
+      isActive: (map['is_active'] as int? ?? 0) == 1,
+      isArchived: (map['is_archived'] as int? ?? 0) == 1,
+      createdAt: parseDateValue(map['created_at']),
+      lastLogin: parseDateValue(map['last_login']),
+    );
+  }
+
+  final int id;
+  final String fullName;
+  final String username;
+  final String employeeNo;
+  final String department;
+  final String role;
+  final bool isActive;
+  final bool isArchived;
+  final DateTime? createdAt;
+  final DateTime? lastLogin;
+
+  bool get isSuperAdmin {
+    return role == 'super_admin';
+  }
+}
+
+class MaterialRecord {
+  const MaterialRecord({
+    required this.id,
+    required this.internalNo,
+    required this.name,
+    required this.type,
+    required this.rawBarcode,
+    required this.barcodeFormat,
+    required this.gtin,
+    required this.lotNumber,
+    required this.serialNumber,
+    required this.catalogNumber,
+    required this.department,
+    required this.deviceName,
+    required this.storageLocation,
+    required this.manufacturer,
+    required this.originalQuantity,
+    required this.usedQuantity,
+    required this.unit,
+    required this.minStock,
+    required this.receivedAt,
+    required this.manufacturerExpiry,
+    required this.openedAt,
+    required this.afterOpenExpiry,
+    required this.status,
+    required this.isApproved,
+    required this.isBlocked,
+    required this.isDisposed,
+    required this.deletedAt,
+    required this.createdBy,
+    required this.createdAt,
+    required this.lastUsedBy,
+    required this.lastUsedAt,
+    required this.usageCount,
+    required this.notes,
+  });
+
+  factory MaterialRecord.fromMap(Map<String, Object?> map) {
+    return MaterialRecord(
+      id: map['id'] as int,
+      internalNo: map['internal_no']?.toString() ?? '',
+      name: map['name']?.toString() ?? '',
+      type: map['type']?.toString() ?? '',
+      rawBarcode: map['raw_barcode_value']?.toString() ?? '',
+      barcodeFormat: map['barcode_format']?.toString() ?? '',
+      gtin: map['gtin']?.toString() ?? '',
+      lotNumber: map['lot_number']?.toString() ?? '',
+      serialNumber: map['serial_number']?.toString() ?? '',
+      catalogNumber: map['catalog_number']?.toString() ?? '',
+      department: map['department']?.toString() ?? '',
+      deviceName: map['device_name']?.toString() ?? '',
+      storageLocation: map['storage_location']?.toString() ?? '',
+      manufacturer: map['manufacturer']?.toString() ?? '',
+      originalQuantity: numberValue(map['original_quantity']),
+      usedQuantity: numberValue(map['used_quantity']),
+      unit: map['unit']?.toString() ?? '',
+      minStock: numberValue(map['min_stock']),
+      receivedAt: parseDateValue(map['received_at']),
+      manufacturerExpiry: parseDateValue(map['manufacturer_expiry']),
+      openedAt: parseDateValue(map['opened_at']),
+      afterOpenExpiry: parseDateValue(map['after_open_expiry']),
+      status: map['status']?.toString() ?? 'active',
+      isApproved: (map['is_approved'] as int? ?? 0) == 1,
+      isBlocked: (map['is_blocked'] as int? ?? 0) == 1,
+      isDisposed: (map['is_disposed'] as int? ?? 0) == 1,
+      deletedAt: parseDateValue(map['deleted_at']),
+      createdBy: map['created_by_name']?.toString() ?? '',
+      createdAt: parseDateValue(map['created_at']),
+      lastUsedBy: map['last_used_by_name']?.toString() ?? '',
+      lastUsedAt: parseDateValue(map['last_used_at']),
+      usageCount: map['usage_count'] as int? ?? 0,
+      notes: map['notes']?.toString() ?? '',
+    );
+  }
+
+  final int id;
+  final String internalNo;
+  final String name;
+  final String type;
+  final String rawBarcode;
+  final String barcodeFormat;
+  final String gtin;
+  final String lotNumber;
+  final String serialNumber;
+  final String catalogNumber;
+  final String department;
+  final String deviceName;
+  final String storageLocation;
+  final String manufacturer;
+  final double originalQuantity;
+  final double usedQuantity;
+  final String unit;
+  final double minStock;
+  final DateTime? receivedAt;
+  final DateTime? manufacturerExpiry;
+  final DateTime? openedAt;
+  final DateTime? afterOpenExpiry;
+  final String status;
+  final bool isApproved;
+  final bool isBlocked;
+  final bool isDisposed;
+  final DateTime? deletedAt;
+  final String createdBy;
+  final DateTime? createdAt;
+  final String lastUsedBy;
+  final DateTime? lastUsedAt;
+  final int usageCount;
+  final String notes;
+
+  double get remainingQuantity {
+    return max(0, originalQuantity - usedQuantity);
+  }
+
+  DateTime? get effectiveExpiry {
+    if (afterOpenExpiry != null) {
+      return afterOpenExpiry;
+    }
+
+    return manufacturerExpiry;
+  }
+
+  bool get isExpired {
+    final DateTime? expiry = effectiveExpiry;
+
+    if (expiry == null) {
+      return false;
+    }
+
+    final DateTime today = DateTime(
+      DateTime.now().year,
+      DateTime.now().month,
+      DateTime.now().day,
+    );
+
+    return expiry.isBefore(today);
+  }
+
+  bool get isAvailable {
+    return deletedAt == null &&
+        isApproved &&
+        !isBlocked &&
+        !isDisposed &&
+        status != 'returned' &&
+        remainingQuantity > 0 &&
+        !isExpired;
+  }
+
+  bool get isExpiredOrEmpty {
+    return deletedAt == null &&
+        (isExpired ||
+            remainingQuantity <= 0 ||
+            status == 'empty' ||
+            status == 'disposed');
+  }
+
+  bool get isUnused {
+    return deletedAt == null &&
+        !isDisposed &&
+        usedQuantity == 0 &&
+        usageCount == 0;
+  }
+
+  bool get isArchived {
+    return deletedAt != null;
+  }
+}
+
+class UsageRecord {
+  const UsageRecord({
+    required this.id,
+    required this.materialId,
+    required this.userId,
+    required this.userName,
+    required this.usedQuantity,
+    required this.previousUsedQuantity,
+    required this.note,
+    required this.createdAt,
+    required this.editedBy,
+    required this.editedAt,
+    required this.editReason,
+  });
+
+  factory UsageRecord.fromMap(Map<String, Object?> map) {
+    return UsageRecord(
+      id: map['id'] as int,
+      materialId: map['material_id'] as int,
+      userId: map['user_id'] as int,
+      userName: map['user_name']?.toString() ?? '',
+      usedQuantity: numberValue(map['used_quantity']),
+      previousUsedQuantity: numberValue(map['previous_used_quantity']),
+      note: map['note']?.toString() ?? '',
+      createdAt: parseDateValue(map['created_at']),
+      editedBy: map['edited_by_name']?.toString() ?? '',
+      editedAt: parseDateValue(map['edited_at']),
+      editReason: map['edit_reason']?.toString() ?? '',
+    );
+  }
+
+  final int id;
+  final int materialId;
+  final int userId;
+  final String userName;
+  final double usedQuantity;
+  final double previousUsedQuantity;
+  final String note;
+  final DateTime? createdAt;
+  final String editedBy;
+  final DateTime? editedAt;
+  final String editReason;
+}
+
+class AppDatabase {
+  AppDatabase._(this.database);
+
+  final Database database;
+
+  static Future<AppDatabase> open() async {
+    final String databasesPath = await getDatabasesPath();
+
+    final String filePath = path_util.join(
+      databasesPath,
+      'smartchem_track_v4.db',
+    );
+
+    late AppDatabase wrapper;
+
+    final Database database = await openDatabase(
+      filePath,
+      version: InventoryRepository.schemaVersion,
+      onConfigure: (Database db) async {
+        await db.execute('PRAGMA foreign_keys = ON');
+      },
+      onCreate: (Database db, int version) async {
+        wrapper = AppDatabase._(db);
+        await wrapper._createSchema(db);
+        await wrapper._seedUsers(db);
+        await InventoryRepository.upgrade(db, version, version);
+      },
+      onUpgrade: (Database db, int oldVersion, int newVersion) async {
+        await InventoryRepository.upgrade(db, oldVersion, newVersion);
+      },
+    );
+
+    return AppDatabase._(database);
+  }
+
+  Future<void> _createSchema(Database db) async {
+    await db.execute('''
+      CREATE TABLE users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        full_name TEXT NOT NULL,
+        username TEXT NOT NULL UNIQUE,
+        password_hash TEXT NOT NULL,
+        password_salt TEXT NOT NULL,
+        employee_no TEXT,
+        department TEXT,
+        role TEXT NOT NULL DEFAULT 'user',
+        is_active INTEGER NOT NULL DEFAULT 1,
+        is_archived INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        created_by INTEGER,
+        updated_at TEXT,
+        updated_by INTEGER,
+        last_login TEXT,
+        preferred_language TEXT NOT NULL DEFAULT 'ar'
+      )
+      ''');
+
+    await db.execute('''
+      CREATE TABLE materials (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        internal_no TEXT NOT NULL UNIQUE,
+        name TEXT NOT NULL,
+        type TEXT NOT NULL,
+        raw_barcode_value TEXT,
+        barcode_format TEXT,
+        gtin TEXT,
+        lot_number TEXT,
+        serial_number TEXT,
+        catalog_number TEXT,
+        department TEXT,
+        device_name TEXT,
+        storage_location TEXT,
+        manufacturer TEXT,
+        original_quantity REAL NOT NULL DEFAULT 0,
+        used_quantity REAL NOT NULL DEFAULT 0,
+        unit TEXT NOT NULL,
+        min_stock REAL NOT NULL DEFAULT 0,
+        received_at TEXT,
+        manufacturer_expiry TEXT,
+        opened_at TEXT,
+        after_open_expiry TEXT,
+        status TEXT NOT NULL DEFAULT 'active',
+        is_approved INTEGER NOT NULL DEFAULT 0,
+        is_blocked INTEGER NOT NULL DEFAULT 0,
+        is_disposed INTEGER NOT NULL DEFAULT 0,
+        deleted_at TEXT,
+        deleted_by INTEGER,
+        deletion_reason TEXT,
+        created_by INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_by INTEGER,
+        updated_at TEXT,
+        last_used_by INTEGER,
+        last_used_at TEXT,
+        usage_count INTEGER NOT NULL DEFAULT 0,
+        notes TEXT,
+        sync_status TEXT NOT NULL DEFAULT 'local',
+        FOREIGN KEY(created_by) REFERENCES users(id)
+      )
+      ''');
+
+    await db.execute('''
+      CREATE TABLE usage_records (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        material_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        original_quantity REAL NOT NULL,
+        used_quantity REAL NOT NULL,
+        previous_used_quantity REAL NOT NULL DEFAULT 0,
+        note TEXT,
+        created_at TEXT NOT NULL,
+        edited_by INTEGER,
+        edited_at TEXT,
+        edit_reason TEXT,
+        is_approved INTEGER NOT NULL DEFAULT 1,
+        sync_status TEXT NOT NULL DEFAULT 'local',
+        FOREIGN KEY(material_id) REFERENCES materials(id),
+        FOREIGN KEY(user_id) REFERENCES users(id)
+      )
+      ''');
+
+    await db.execute('''
+      CREATE TABLE audit_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        entity_type TEXT NOT NULL,
+        entity_id INTEGER,
+        action TEXT NOT NULL,
+        old_value TEXT,
+        new_value TEXT,
+        reason TEXT,
+        performed_by INTEGER NOT NULL,
+        affected_user_id INTEGER,
+        performed_at TEXT NOT NULL,
+        device_name TEXT,
+        sync_status TEXT NOT NULL DEFAULT 'local',
+        FOREIGN KEY(performed_by) REFERENCES users(id)
+      )
+      ''');
+
+    await db.execute(
+      'CREATE INDEX index_material_barcode '
+      'ON materials(raw_barcode_value)',
+    );
+
+    await db.execute(
+      'CREATE INDEX index_material_gtin_lot '
+      'ON materials(gtin, lot_number)',
+    );
+
+    await db.execute(
+      'CREATE INDEX index_usage_material '
+      'ON usage_records(material_id)',
+    );
+  }
+
+  Uint8List _randomBytes(int length) {
+    final Random random = Random.secure();
+
+    return Uint8List.fromList(
+      List<int>.generate(length, (int index) => random.nextInt(256)),
+    );
+  }
+
+  Uint8List _pbkdf2({
+    required String password,
+    required Uint8List salt,
+    int iterations = 60000,
+    int outputLength = 32,
+  }) {
+    final Hmac hmac = Hmac(sha256, utf8.encode(password));
+
+    final List<int> output = <int>[];
+    int blockNumber = 1;
+
+    while (output.length < outputLength) {
+      final ByteData blockData = ByteData(4)
+        ..setUint32(0, blockNumber, Endian.big);
+
+      Uint8List current = Uint8List.fromList(
+        hmac.convert(<int>[...salt, ...blockData.buffer.asUint8List()]).bytes,
+      );
+
+      final Uint8List result = Uint8List.fromList(current);
+
+      for (int iteration = 1; iteration < iterations; iteration++) {
+        current = Uint8List.fromList(hmac.convert(current).bytes);
+
+        for (int index = 0; index < result.length; index++) {
+          result[index] ^= current[index];
+        }
+      }
+
+      output.addAll(result);
+      blockNumber++;
+    }
+
+    return Uint8List.fromList(output.take(outputLength).toList());
+  }
+
+  Map<String, String> passwordData(String password) {
+    final Uint8List salt = _randomBytes(16);
+
+    final Uint8List hash = _pbkdf2(password: password, salt: salt);
+
+    return <String, String>{
+      'salt': base64Encode(salt),
+      'hash': base64Encode(hash),
+    };
+  }
+
+  bool verifyPassword({
+    required String password,
+    required String saltBase64,
+    required String expectedHash,
+  }) {
+    final Uint8List salt = base64Decode(saltBase64);
+
+    final String actualHash = base64Encode(
+      _pbkdf2(password: password, salt: salt),
+    );
+
+    return actualHash == expectedHash;
+  }
+
+  Future<void> _seedUsers(Database db) async {
+    final Map<String, String> adminPassword = passwordData('1234');
+
+    final int adminId = await db.insert('users', <String, Object?>{
+      'full_name': 'المستخدم الرئيسي',
+      'username': 'admin',
+      'password_hash': adminPassword['hash'],
+      'password_salt': adminPassword['salt'],
+      'employee_no': '',
+      'department': 'الإدارة',
+      'role': 'super_admin',
+      'is_active': 1,
+      'is_archived': 0,
+      'created_at': isoNow(),
+      'preferred_language': 'ar',
+    });
+
+    await db.update(
+      'users',
+      <String, Object?>{'created_by': adminId},
+      where: 'id = ?',
+      whereArgs: <Object?>[adminId],
+    );
+
+    final Map<String, String> userPassword = passwordData('1234');
+
+    await db.insert('users', <String, Object?>{
+      'full_name': 'مستخدم المختبر',
+      'username': 'user',
+      'password_hash': userPassword['hash'],
+      'password_salt': userPassword['salt'],
+      'employee_no': '',
+      'department': 'المختبر',
+      'role': 'user',
+      'is_active': 1,
+      'is_archived': 0,
+      'created_at': isoNow(),
+      'created_by': adminId,
+      'preferred_language': 'ar',
+    });
+  }
+
+  Future<UserRecord?> authenticate({
+    required String username,
+    required String password,
+  }) async {
+    final List<Map<String, Object?>> rows = await database.query(
+      'users',
+      where:
+          'LOWER(username) = LOWER(?) '
+          'AND is_active = 1 '
+          'AND is_archived = 0',
+      whereArgs: <Object?>[username.trim()],
+      limit: 1,
+    );
+
+    if (rows.isEmpty) {
+      return null;
+    }
+
+    final Map<String, Object?> row = rows.first;
+
+    final bool valid = verifyPassword(
+      password: password,
+      saltBase64: row['password_salt'].toString(),
+      expectedHash: row['password_hash'].toString(),
+    );
+
+    if (!valid) {
+      return null;
+    }
+
+    await database.update(
+      'users',
+      <String, Object?>{'last_login': isoNow()},
+      where: 'id = ?',
+      whereArgs: <Object?>[row['id']],
+    );
+
+    final Map<String, Object?> updated = Map<String, Object?>.from(row);
+
+    updated['last_login'] = isoNow();
+
+    return UserRecord.fromMap(updated);
+  }
+
+  Future<String> preferredLanguage(int userId) async {
+    final List<Map<String, Object?>> rows = await database.query(
+      'users',
+      columns: <String>['preferred_language'],
+      where: 'id = ?',
+      whereArgs: <Object?>[userId],
+      limit: 1,
+    );
+
+    if (rows.isEmpty) {
+      return 'ar';
+    }
+
+    return rows.first['preferred_language']?.toString() ?? 'ar';
+  }
+
+  Future<void> setPreferredLanguage({
+    required int userId,
+    required String language,
+  }) async {
+    await database.update(
+      'users',
+      <String, Object?>{
+        'preferred_language': language,
+        'updated_at': isoNow(),
+        'updated_by': userId,
+      },
+      where: 'id = ?',
+      whereArgs: <Object?>[userId],
+    );
+  }
+
+  void requireAdmin(UserRecord actor) {
+    if (!actor.isSuperAdmin || !actor.isActive || actor.isArchived) {
+      throw StateError('ADMIN_ONLY');
+    }
+  }
+
+  Future<void> audit({
+    required UserRecord actor,
+    required String entityType,
+    required int? entityId,
+    required String action,
+    String? oldValue,
+    String? newValue,
+    String? reason,
+    int? affectedUserId,
+  }) async {
+    await database.insert('audit_logs', <String, Object?>{
+      'entity_type': entityType,
+      'entity_id': entityId,
+      'action': action,
+      'old_value': oldValue,
+      'new_value': newValue,
+      'reason': reason,
+      'performed_by': actor.id,
+      'affected_user_id': affectedUserId,
+      'performed_at': isoNow(),
+      'device_name': Platform.operatingSystem,
+      'sync_status': 'local',
+    });
+  }
+
+  Future<List<MaterialRecord>> materials({bool includeArchived = true}) async {
+    final List<Map<String, Object?>> rows = await database.rawQuery('''
+      SELECT
+        m.*,
+        creator.full_name AS created_by_name,
+        last_user.full_name AS last_used_by_name
+      FROM materials m
+      LEFT JOIN users creator
+        ON creator.id = m.created_by
+      LEFT JOIN users last_user
+        ON last_user.id = m.last_used_by
+      ${includeArchived ? '' : 'WHERE m.deleted_at IS NULL'}
+      ORDER BY m.created_at DESC
+      ''');
+
+    return rows.map(MaterialRecord.fromMap).toList();
+  }
+
+  Future<MaterialRecord?> materialById(int materialId) async {
+    final List<Map<String, Object?>> rows = await database.rawQuery(
+      '''
+      SELECT
+        m.*,
+        creator.full_name AS created_by_name,
+        last_user.full_name AS last_used_by_name
+      FROM materials m
+      LEFT JOIN users creator
+        ON creator.id = m.created_by
+      LEFT JOIN users last_user
+        ON last_user.id = m.last_used_by
+      WHERE m.id = ?
+      LIMIT 1
+      ''',
+      <Object?>[materialId],
+    );
+
+    if (rows.isEmpty) {
+      return null;
+    }
+
+    return MaterialRecord.fromMap(rows.first);
+  }
+
+  Future<MaterialRecord?> findMaterial({
+    required String rawBarcode,
+    required ParsedGs1 parsed,
+  }) async {
+    final String normalized = rawBarcode.trim();
+
+    List<Map<String, Object?>> rows = await database.query(
+      'materials',
+      where:
+          'raw_barcode_value = ? '
+          'AND deleted_at IS NULL',
+      whereArgs: <Object?>[normalized],
+      limit: 1,
+    );
+
+    if (rows.isEmpty && parsed.serial.isNotEmpty) {
+      rows = await database.query(
+        'materials',
+        where:
+            'serial_number = ? '
+            'AND deleted_at IS NULL',
+        whereArgs: <Object?>[parsed.serial],
+        limit: 1,
+      );
+    }
+
+    if (rows.isEmpty && parsed.gtin.isNotEmpty && parsed.lot.isNotEmpty) {
+      rows = await database.query(
+        'materials',
+        where:
+            'gtin = ? AND lot_number = ? '
+            'AND deleted_at IS NULL',
+        whereArgs: <Object?>[parsed.gtin, parsed.lot],
+        limit: 1,
+      );
+    }
+
+    if (rows.isEmpty) {
+      return null;
+    }
+
+    return materialById(rows.first['id'] as int);
+  }
+
+  Future<int> saveMaterial({
+    required UserRecord actor,
+    required Map<String, Object?> values,
+    int? materialId,
+    required String reason,
+  }) async {
+    requireAdmin(actor);
+
+    if (materialId == null) {
+      final int id = await database.insert('materials', <String, Object?>{
+        ...values,
+        'used_quantity': 0,
+        'usage_count': 0,
+        'created_by': actor.id,
+        'created_at': isoNow(),
+        'status': 'active',
+        'sync_status': 'local',
+      });
+
+      await audit(
+        actor: actor,
+        entityType: 'material',
+        entityId: id,
+        action: 'ADD_MATERIAL',
+        newValue: jsonEncode(values),
+        reason: reason,
+      );
+
+      return id;
+    }
+
+    final MaterialRecord? old = await materialById(materialId);
+
+    await database.update(
+      'materials',
+      <String, Object?>{
+        ...values,
+        'updated_by': actor.id,
+        'updated_at': isoNow(),
+        'sync_status': 'local',
+      },
+      where: 'id = ?',
+      whereArgs: <Object?>[materialId],
+    );
+
+    await _recalculateMaterial(materialId);
+
+    await audit(
+      actor: actor,
+      entityType: 'material',
+      entityId: materialId,
+      action: 'EDIT_MATERIAL',
+      oldValue:
+          old == null
+              ? null
+              : jsonEncode(<String, Object?>{
+                'name': old.name,
+                'original_quantity': old.originalQuantity,
+                'used_quantity': old.usedQuantity,
+                'department': old.department,
+                'device': old.deviceName,
+              }),
+      newValue: jsonEncode(values),
+      reason: reason,
+    );
+
+    return materialId;
+  }
+
+  Future<void> archiveMaterial({
+    required UserRecord actor,
+    required int materialId,
+    required String reason,
+  }) async {
+    requireAdmin(actor);
+
+    if (reason.trim().isEmpty) {
+      throw ArgumentError('REASON_REQUIRED');
+    }
+
+    await database.update(
+      'materials',
+      <String, Object?>{
+        'deleted_at': isoNow(),
+        'deleted_by': actor.id,
+        'deletion_reason': reason.trim(),
+        'updated_by': actor.id,
+        'updated_at': isoNow(),
+        'sync_status': 'local',
+      },
+      where: 'id = ?',
+      whereArgs: <Object?>[materialId],
+    );
+
+    await audit(
+      actor: actor,
+      entityType: 'material',
+      entityId: materialId,
+      action: 'ARCHIVE_MATERIAL',
+      reason: reason,
+    );
+  }
+
+  Future<void> restoreMaterial({
+    required UserRecord actor,
+    required int materialId,
+    required String reason,
+  }) async {
+    requireAdmin(actor);
+
+    await database.update(
+      'materials',
+      <String, Object?>{
+        'deleted_at': null,
+        'deleted_by': null,
+        'deletion_reason': null,
+        'updated_by': actor.id,
+        'updated_at': isoNow(),
+        'sync_status': 'local',
+      },
+      where: 'id = ?',
+      whereArgs: <Object?>[materialId],
+    );
+
+    await audit(
+      actor: actor,
+      entityType: 'material',
+      entityId: materialId,
+      action: 'RESTORE_MATERIAL',
+      reason: reason,
+    );
+  }
+
+  Future<void> setMaterialFlag({
+    required UserRecord actor,
+    required int materialId,
+    required String column,
+    required bool value,
+    required String action,
+    required String reason,
+  }) async {
+    requireAdmin(actor);
+
+    const Set<String> allowedColumns = <String>{
+      'is_approved',
+      'is_blocked',
+      'is_disposed',
+    };
+
+    if (!allowedColumns.contains(column)) {
+      throw ArgumentError('INVALID_COLUMN');
+    }
+
+    await database.update(
+      'materials',
+      <String, Object?>{
+        column: value ? 1 : 0,
+        'updated_by': actor.id,
+        'updated_at': isoNow(),
+        'sync_status': 'local',
+      },
+      where: 'id = ?',
+      whereArgs: <Object?>[materialId],
+    );
+
+    await audit(
+      actor: actor,
+      entityType: 'material',
+      entityId: materialId,
+      action: action,
+      oldValue: (!value).toString(),
+      newValue: value.toString(),
+      reason: reason,
+    );
+  }
+
+  Future<void> recordUsage({
+    required UserRecord actor,
+    required int materialId,
+    required double quantity,
+    required String note,
+  }) async {
+    if (quantity <= 0) {
+      throw ArgumentError('INVALID_QUANTITY');
+    }
+
+    await database.transaction((Transaction transaction) async {
+      final List<Map<String, Object?>> rows = await transaction.query(
+        'materials',
+        where: 'id = ? AND deleted_at IS NULL',
+        whereArgs: <Object?>[materialId],
+        limit: 1,
+      );
+
+      if (rows.isEmpty) {
+        throw StateError('MATERIAL_NOT_FOUND');
+      }
+
+      final double original = numberValue(rows.first['original_quantity']);
+
+      final double used = numberValue(rows.first['used_quantity']);
+
+      final double remaining = original - used;
+
+      if (quantity > remaining) {
+        throw ArgumentError('INVALID_QUANTITY');
+      }
+
+      final int usageId = await transaction
+          .insert('usage_records', <String, Object?>{
+            'material_id': materialId,
+            'user_id': actor.id,
+            'original_quantity': original,
+            'used_quantity': quantity,
+            'previous_used_quantity': 0,
+            'note': note.trim(),
+            'created_at': isoNow(),
+            'is_approved': 1,
+            'sync_status': 'local',
+          });
+
+      final double newUsed = used + quantity;
+
+      await transaction.update(
+        'materials',
+        <String, Object?>{
+          'used_quantity': newUsed,
+          'usage_count': (rows.first['usage_count'] as int? ?? 0) + 1,
+          'last_used_by': actor.id,
+          'last_used_at': isoNow(),
+          'status': newUsed >= original ? 'empty' : 'active',
+          'updated_at': isoNow(),
+          'updated_by': actor.id,
+          'sync_status': 'local',
+        },
+        where: 'id = ?',
+        whereArgs: <Object?>[materialId],
+      );
+
+      await transaction.insert('audit_logs', <String, Object?>{
+        'entity_type': 'usage',
+        'entity_id': usageId,
+        'action': 'ADD_USAGE',
+        'new_value': quantity.toString(),
+        'reason': note,
+        'performed_by': actor.id,
+        'performed_at': isoNow(),
+        'device_name': Platform.operatingSystem,
+        'sync_status': 'local',
+      });
+    });
+  }
+
+  Future<List<UsageRecord>> usageRecords(int materialId) async {
+    final List<Map<String, Object?>> rows = await database.rawQuery(
+      '''
+      SELECT
+        u.*,
+        original_user.full_name AS user_name,
+        editor.full_name AS edited_by_name
+      FROM usage_records u
+      JOIN users original_user
+        ON original_user.id = u.user_id
+      LEFT JOIN users editor
+        ON editor.id = u.edited_by
+      WHERE u.material_id = ?
+      ORDER BY u.created_at DESC
+      ''',
+      <Object?>[materialId],
+    );
+
+    return rows.map(UsageRecord.fromMap).toList();
+  }
+
+  Future<void> editUsage({
+    required UserRecord actor,
+    required int usageId,
+    required double newQuantity,
+    required String reason,
+  }) async {
+    if (newQuantity < 0 || reason.trim().isEmpty) {
+      throw ArgumentError('INVALID_QUANTITY');
+    }
+
+    await database.transaction((Transaction transaction) async {
+      final List<Map<String, Object?>> rows = await transaction.query(
+        'usage_records',
+        where: 'id = ?',
+        whereArgs: <Object?>[usageId],
+        limit: 1,
+      );
+
+      if (rows.isEmpty) {
+        throw StateError('USAGE_NOT_FOUND');
+      }
+
+      final Map<String, Object?> row = rows.first;
+
+      final int ownerId = row['user_id'] as int;
+
+      if (!actor.isSuperAdmin && ownerId != actor.id) {
+        throw StateError('ADMIN_ONLY');
+      }
+
+      final int materialId = row['material_id'] as int;
+
+      final double oldQuantity = numberValue(row['used_quantity']);
+
+      await transaction.update(
+        'usage_records',
+        <String, Object?>{
+          'previous_used_quantity': oldQuantity,
+          'used_quantity': newQuantity,
+          'edited_by': actor.id,
+          'edited_at': isoNow(),
+          'edit_reason': reason.trim(),
+          'sync_status': 'local',
+        },
+        where: 'id = ?',
+        whereArgs: <Object?>[usageId],
+      );
+
+      final List<Map<String, Object?>> materialRows = await transaction.query(
+        'materials',
+        where: 'id = ?',
+        whereArgs: <Object?>[materialId],
+        limit: 1,
+      );
+
+      final double original = numberValue(
+        materialRows.first['original_quantity'],
+      );
+
+      final List<Map<String, Object?>> sumRows = await transaction.rawQuery(
+        '''
+          SELECT
+            COALESCE(SUM(used_quantity), 0)
+              AS total_used,
+            COUNT(*) AS usage_count
+          FROM usage_records
+          WHERE material_id = ?
+            AND is_approved = 1
+          ''',
+        <Object?>[materialId],
+      );
+
+      final double totalUsed = numberValue(sumRows.first['total_used']);
+
+      if (totalUsed > original && !actor.isSuperAdmin) {
+        throw ArgumentError('INVALID_QUANTITY');
+      }
+
+      await transaction.update(
+        'materials',
+        <String, Object?>{
+          'used_quantity': totalUsed,
+          'usage_count': sumRows.first['usage_count'],
+          'status': totalUsed >= original ? 'empty' : 'active',
+          'updated_by': actor.id,
+          'updated_at': isoNow(),
+          'sync_status': 'local',
+        },
+        where: 'id = ?',
+        whereArgs: <Object?>[materialId],
+      );
+
+      await transaction.insert('audit_logs', <String, Object?>{
+        'entity_type': 'usage',
+        'entity_id': usageId,
+        'action': 'EDIT_USAGE',
+        'old_value': oldQuantity.toString(),
+        'new_value': newQuantity.toString(),
+        'reason': reason.trim(),
+        'performed_by': actor.id,
+        'affected_user_id': ownerId,
+        'performed_at': isoNow(),
+        'device_name': Platform.operatingSystem,
+        'sync_status': 'local',
+      });
+    });
+  }
+
+  Future<void> _recalculateMaterial(int materialId) async {
+    final List<Map<String, Object?>> rows = await database.rawQuery(
+      '''
+      SELECT
+        COALESCE(SUM(used_quantity), 0)
+          AS total_used,
+        COUNT(*) AS usage_count
+      FROM usage_records
+      WHERE material_id = ?
+        AND is_approved = 1
+      ''',
+      <Object?>[materialId],
+    );
+
+    final double totalUsed = numberValue(rows.first['total_used']);
+
+    final List<Map<String, Object?>> materialRows = await database.query(
+      'materials',
+      where: 'id = ?',
+      whereArgs: <Object?>[materialId],
+      limit: 1,
+    );
+
+    if (materialRows.isEmpty) {
+      return;
+    }
+
+    final double original = numberValue(
+      materialRows.first['original_quantity'],
+    );
+
+    await database.update(
+      'materials',
+      <String, Object?>{
+        'used_quantity': totalUsed,
+        'usage_count': rows.first['usage_count'],
+        'status': totalUsed >= original ? 'empty' : 'active',
+        'sync_status': 'local',
+      },
+      where: 'id = ?',
+      whereArgs: <Object?>[materialId],
+    );
+  }
+
+  Future<List<UserRecord>> users() async {
+    final List<Map<String, Object?>> rows = await database.query(
+      'users',
+      orderBy: 'full_name ASC',
+    );
+
+    return rows.map(UserRecord.fromMap).toList();
+  }
+
+  Future<void> saveUser({
+    required UserRecord actor,
+    int? userId,
+    required String fullName,
+    required String username,
+    required String employeeNo,
+    required String department,
+    required String role,
+    required bool isActive,
+    required bool isArchived,
+    String? password,
+    required String reason,
+  }) async {
+    requireAdmin(actor);
+
+    if (fullName.trim().isEmpty || username.trim().isEmpty) {
+      throw ArgumentError('REQUIRED');
+    }
+
+    if (userId == null && (password == null || password.trim().isEmpty)) {
+      throw ArgumentError('PASSWORD_REQUIRED');
+    }
+
+    if (userId != null) {
+      final List<Map<String, Object?>> existingRows = await database.query(
+        'users',
+        where: 'id = ?',
+        whereArgs: <Object?>[userId],
+        limit: 1,
+      );
+
+      if (existingRows.isNotEmpty) {
+        final Map<String, Object?> existing = existingRows.first;
+
+        final bool wasActiveAdmin =
+            existing['role'] == 'super_admin' &&
+            existing['is_active'] == 1 &&
+            existing['is_archived'] == 0;
+
+        final bool remainsActiveAdmin =
+            role == 'super_admin' && isActive && !isArchived;
+
+        if (wasActiveAdmin && !remainsActiveAdmin) {
+          final int count =
+              Sqflite.firstIntValue(
+                await database.rawQuery('''
+                      SELECT COUNT(*)
+                      FROM users
+                      WHERE role = 'super_admin'
+                        AND is_active = 1
+                        AND is_archived = 0
+                      '''),
+              ) ??
+              0;
+
+          if (count <= 1) {
+            throw StateError('LAST_ADMIN');
+          }
+        }
+      }
+    }
+
+    final Map<String, Object?> values = <String, Object?>{
+      'full_name': fullName.trim(),
+      'username': username.trim(),
+      'employee_no': employeeNo.trim(),
+      'department': department.trim(),
+      'role': role,
+      'is_active': isActive ? 1 : 0,
+      'is_archived': isArchived ? 1 : 0,
+      'updated_at': isoNow(),
+      'updated_by': actor.id,
+    };
+
+    if (password != null && password.trim().isNotEmpty) {
+      final Map<String, String> secure = passwordData(password.trim());
+
+      values['password_hash'] = secure['hash'];
+
+      values['password_salt'] = secure['salt'];
+    }
+
+    int savedId;
+
+    if (userId == null) {
+      values['created_at'] = isoNow();
+      values['created_by'] = actor.id;
+      values['preferred_language'] = 'ar';
+
+      savedId = await database.insert('users', values);
+    } else {
+      await database.update(
+        'users',
+        values,
+        where: 'id = ?',
+        whereArgs: <Object?>[userId],
+      );
+
+      savedId = userId;
+    }
+
+    await audit(
+      actor: actor,
+      entityType: 'user',
+      entityId: savedId,
+      action: userId == null ? 'ADD_USER' : 'EDIT_USER',
+      newValue: jsonEncode(<String, Object?>{
+        'full_name': fullName,
+        'username': username,
+        'department': department,
+        'role': role,
+        'is_active': isActive,
+        'is_archived': isArchived,
+      }),
+      reason: reason,
+      affectedUserId: savedId,
+    );
+  }
+
+  Future<List<Map<String, Object?>>> auditLogs({int? materialId}) async {
+    final String condition =
+        materialId == null
+            ? ''
+            : "WHERE a.entity_type = 'material' "
+                'AND a.entity_id = ?';
+
+    return database.rawQuery('''
+      SELECT
+        a.*,
+        performer.full_name AS performer_name
+      FROM audit_logs a
+      JOIN users performer
+        ON performer.id = a.performed_by
+      $condition
+      ORDER BY a.performed_at DESC
+      LIMIT 500
+      ''', materialId == null ? <Object?>[] : <Object?>[materialId]);
+  }
+}
+
+class AppController extends ChangeNotifier {
+  late AppDatabase db;
+  late InventoryRepository inventory;
+
+  UserRecord? currentUser;
+  Locale locale = const Locale('ar');
+  int revision = 0;
+
+  Future<void> initialize() async {
+    db = await AppDatabase.open();
+    inventory = InventoryRepository(db.database);
+  }
+
+  Future<bool> login({
+    required String username,
+    required String password,
+  }) async {
+    final UserRecord? user = await db.authenticate(
+      username: username,
+      password: password,
+    );
+
+    if (user == null) {
+      return false;
+    }
+
+    currentUser = user;
+
+    final String language = await db.preferredLanguage(user.id);
+
+    locale = Locale(language == 'en' ? 'en' : 'ar');
+
+    revision++;
+    notifyListeners();
+
+    return true;
+  }
+
+  Future<void> changeLanguage(String language) async {
+    locale = Locale(language == 'en' ? 'en' : 'ar');
+
+    final UserRecord? user = currentUser;
+
+    if (user != null) {
+      await db.setPreferredLanguage(
+        userId: user.id,
+        language: locale.languageCode,
+      );
+    }
+
+    notifyListeners();
+  }
+
+  void refresh() {
+    revision++;
+    notifyListeners();
+  }
+
+  void logout() {
+    currentUser = null;
+    revision++;
+    notifyListeners();
+  }
+}
+
+class SmartChemApp extends StatelessWidget {
+  const SmartChemApp({super.key, required this.controller});
+
+  final AppController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: controller,
+      builder: (BuildContext context, Widget? child) {
+        return MaterialApp(
+          debugShowCheckedModeBanner: false,
+          title: 'SmartChem Track',
+          locale: controller.locale,
+          supportedLocales: AppLocalizations.supportedLocales,
+          localizationsDelegates: const <LocalizationsDelegate<dynamic>>[
+            AppLocalizations.delegate,
+            GlobalMaterialLocalizations.delegate,
+            GlobalWidgetsLocalizations.delegate,
+            GlobalCupertinoLocalizations.delegate,
+          ],
+          theme: ThemeData(
+            useMaterial3: true,
+            colorSchemeSeed: Colors.blueGrey,
+            brightness: Brightness.light,
+            inputDecorationTheme: const InputDecorationTheme(
+              border: OutlineInputBorder(),
+            ),
+            cardTheme: const CardThemeData(
+              elevation: 1,
+              margin: EdgeInsets.zero,
+            ),
+          ),
+          darkTheme: ThemeData(
+            useMaterial3: true,
+            colorSchemeSeed: Colors.blueGrey,
+            brightness: Brightness.dark,
+            inputDecorationTheme: const InputDecorationTheme(
+              border: OutlineInputBorder(),
+            ),
+          ),
+          themeMode: ThemeMode.system,
+          home:
+              controller.currentUser == null
+                  ? LoginScreen(controller: controller)
+                  : HomeScreen(controller: controller),
+        );
+      },
+    );
+  }
+}
+
+class LoginScreen extends StatefulWidget {
+  const LoginScreen({super.key, required this.controller});
+
+  final AppController controller;
+
+  @override
+  State<LoginScreen> createState() {
+    return _LoginScreenState();
+  }
+}
+
+class _LoginScreenState extends State<LoginScreen> {
+  final TextEditingController username = TextEditingController();
+
+  final TextEditingController password = TextEditingController();
+
+  bool busy = false;
+  String error = '';
+
+  Future<void> submit() async {
+    setState(() {
+      busy = true;
+      error = '';
+    });
+
+    final bool successful = await widget.controller.login(
+      username: username.text,
+      password: password.text,
+    );
+
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      busy = false;
+
+      if (!successful) {
+        error = AppLocalizations.of(context).invalidLogin;
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    username.dispose();
+    password.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final AppLocalizations text = AppLocalizations.of(context);
+
+    return Scaffold(
+      body: SafeArea(
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(24),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 520),
+              child: Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: <Widget>[
+                      const CircleAvatar(
+                        radius: 45,
+                        child: Icon(Icons.science, size: 52),
+                      ),
+                      const SizedBox(height: 14),
+                      Text(
+                        text.appTitle,
+                        textAlign: TextAlign.center,
+                        style: Theme.of(context).textTheme.headlineMedium
+                            ?.copyWith(fontWeight: FontWeight.bold),
+                      ),
+                      Text(text.version, textAlign: TextAlign.center),
+                      const SizedBox(height: 22),
+                      SegmentedButton<String>(
+                        segments: <ButtonSegment<String>>[
+                          ButtonSegment<String>(
+                            value: 'ar',
+                            label: Text(text.arabic),
+                          ),
+                          ButtonSegment<String>(
+                            value: 'en',
+                            label: Text(text.english),
+                          ),
+                        ],
+                        selected: <String>{
+                          widget.controller.locale.languageCode,
+                        },
+                        onSelectionChanged: (Set<String> value) {
+                          widget.controller.changeLanguage(value.first);
+                        },
+                      ),
+                      const SizedBox(height: 18),
+                      TextField(
+                        controller: username,
+                        textInputAction: TextInputAction.next,
+                        decoration: InputDecoration(
+                          labelText: text.username,
+                          prefixIcon: const Icon(Icons.person),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: password,
+                        obscureText: true,
+                        onSubmitted: (String value) {
+                          submit();
+                        },
+                        decoration: InputDecoration(
+                          labelText: text.password,
+                          prefixIcon: const Icon(Icons.lock),
+                        ),
+                      ),
+                      if (error.isNotEmpty) ...<Widget>[
+                        const SizedBox(height: 10),
+                        Text(
+                          error,
+                          style: const TextStyle(
+                            color: Colors.red,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
+                      const SizedBox(height: 16),
+                      FilledButton(
+                        onPressed: busy ? null : submit,
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          child:
+                              busy
+                                  ? const SizedBox(
+                                    width: 22,
+                                    height: 22,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  )
+                                  : Text(text.login),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+enum MaterialFilter { all, available, expiredOrEmpty, unused, archived }
+
+class HomeScreen extends StatelessWidget {
+  const HomeScreen({super.key, required this.controller});
+
+  final AppController controller;
+
+  Future<void> openScanner(BuildContext context) async {
+    final UserRecord actor = controller.currentUser!;
+
+    final ScannedCode? scan = await Navigator.of(context).push<ScannedCode>(
+      MaterialPageRoute<ScannedCode>(
+        builder: (BuildContext context) {
+          return const ScannerScreen();
+        },
+      ),
+    );
+
+    if (scan == null || !context.mounted) {
+      return;
+    }
+
+    final ParsedGs1 parsed = parseGs1(scan.rawValue);
+    final UnitRecord? hierarchyUnit =
+        await controller.inventory.findUnit(scan.rawValue) ??
+        (parsed.serial.isEmpty
+            ? null
+            : await controller.inventory.findUnit(parsed.serial));
+
+    if (hierarchyUnit != null) {
+      final ProductRecord? product = await controller.inventory.productById(
+        hierarchyUnit.productId,
+      );
+
+      if (product != null && context.mounted) {
+        await Navigator.of(context).push(
+          MaterialPageRoute<void>(
+            builder: (BuildContext context) {
+              return UnitDetailsScreen(
+                repository: controller.inventory,
+                actorId: actor.id,
+                canManage: actor.isSuperAdmin,
+                product: product,
+                unitId: hierarchyUnit.id,
+              );
+            },
+          ),
+        );
+        controller.refresh();
+        return;
+      }
+    }
+
+    final CartonRecord? hierarchyCarton =
+        await controller.inventory.findCarton(scan.rawValue) ??
+        (parsed.serial.isEmpty
+            ? null
+            : await controller.inventory.findCarton(parsed.serial));
+    if (hierarchyCarton != null) {
+      final ProductRecord? product = await controller.inventory.productById(
+        hierarchyCarton.productId,
+      );
+      final LotRecord? lot = await controller.inventory.lotById(
+        hierarchyCarton.lotId,
+      );
+      if (product != null && lot != null && context.mounted) {
+        await Navigator.of(context).push(
+          MaterialPageRoute<void>(
+            builder:
+                (_) => CartonDetailsScreen(
+                  repository: controller.inventory,
+                  actorId: actor.id,
+                  canManage: actor.isSuperAdmin,
+                  product: product,
+                  lot: lot,
+                  cartonId: hierarchyCarton.id,
+                ),
+          ),
+        );
+        controller.refresh();
+        return;
+      }
+    }
+
+    final MaterialRecord? existing = await controller.db.findMaterial(
+      rawBarcode: scan.rawValue,
+      parsed: parsed,
+    );
+
+    if (!context.mounted) {
+      return;
+    }
+
+    if (existing != null) {
+      await Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (BuildContext context) {
+            return MaterialDetailsScreen(
+              controller: controller,
+              materialId: existing.id,
+            );
+          },
+        ),
+      );
+
+      controller.refresh();
+      return;
+    }
+
+    if (!actor.isSuperAdmin) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(AppLocalizations.of(context).adminOnly)),
+      );
+
+      return;
+    }
+
+    final InventoryIntakeResult? intake = await Navigator.of(
+      context,
+    ).push<InventoryIntakeResult>(
+      MaterialPageRoute<InventoryIntakeResult>(
+        builder: (BuildContext context) {
+          return InventoryIntakeScreen(
+            repository: controller.inventory,
+            actorId: actor.id,
+            rawBarcode: scan.rawValue,
+            barcodeFormat: scan.format,
+            gtin: parsed.gtin,
+            lotNumber: parsed.lot,
+            serialNumber: parsed.serial,
+            catalogNumber: parsed.catalog,
+            manufacturerExpiry: parsed.expiryDate,
+          );
+        },
+      ),
+    );
+
+    if (intake != null && context.mounted) {
+      final ProductRecord? product = await controller.inventory.productById(
+        intake.productId,
+      );
+      final LotRecord? lot = await controller.inventory.lotById(intake.lotId);
+      if (product != null && lot != null && context.mounted) {
+        await Navigator.of(context).push(
+          MaterialPageRoute<void>(
+            builder:
+                (_) => CartonDetailsScreen(
+                  repository: controller.inventory,
+                  actorId: actor.id,
+                  canManage: true,
+                  product: product,
+                  lot: lot,
+                  cartonId: intake.cartonId,
+                ),
+          ),
+        );
+      }
+    }
+
+    controller.refresh();
+  }
+
+  Future<void> openInventory(
+    BuildContext context,
+    MaterialFilter filter,
+  ) async {
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (BuildContext context) {
+          return InventoryScreen(controller: controller, initialFilter: filter);
+        },
+      ),
+    );
+
+    controller.refresh();
+  }
+
+  Future<void> openHierarchyInventory(
+    BuildContext context,
+    InventoryUnitFilter filter,
+    String title,
+  ) async {
+    final UserRecord user = controller.currentUser!;
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder:
+            (_) => InventoryUnitListScreen(
+              repository: controller.inventory,
+              actorId: user.id,
+              canManage: user.isSuperAdmin,
+              filter: filter,
+              title: title,
+            ),
+      ),
+    );
+    controller.refresh();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final AppLocalizations text = AppLocalizations.of(context);
+
+    final UserRecord user = controller.currentUser!;
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(text.appTitle),
+        actions: <Widget>[
+          IconButton(
+            tooltip: text.language,
+            onPressed: () {
+              controller.changeLanguage(
+                controller.locale.languageCode == 'ar' ? 'en' : 'ar',
+              );
+            },
+            icon: const Icon(Icons.language),
+          ),
+          IconButton(
+            tooltip: text.logout,
+            onPressed: controller.logout,
+            icon: const Icon(Icons.logout),
+          ),
+        ],
+      ),
+      body: FutureBuilder<List<UnitRecord>>(
+        key: ValueKey<int>(controller.revision),
+        future: controller.inventory.allUnits(),
+        builder: (
+          BuildContext context,
+          AsyncSnapshot<List<UnitRecord>> snapshot,
+        ) {
+          if (!snapshot.hasData) {
+            return const Center(child: CircularProgressIndicator());
+          }
+
+          final List<UnitRecord> units = snapshot.data!;
+          final int total = units.length;
+          final int available =
+              units
+                  .where((UnitRecord unit) => !unit.isEmpty && !unit.isExpired)
+                  .length;
+          final int expired =
+              units
+                  .where((UnitRecord unit) => unit.isEmpty || unit.isExpired)
+                  .length;
+          final int unused =
+              units
+                  .where(
+                    (UnitRecord unit) =>
+                        !unit.isEmpty &&
+                        !unit.isExpired &&
+                        !unit.isOpened &&
+                        unit.usedQuantity <= 0,
+                  )
+                  .length;
+
+          return ListView(
+            padding: const EdgeInsets.all(16),
+            children: <Widget>[
+              Text(
+                '${text.welcome}، '
+                '${user.fullName}',
+                style: Theme.of(context).textTheme.titleLarge,
+              ),
+              const SizedBox(height: 14),
+              GridView.count(
+                crossAxisCount: 2,
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                mainAxisSpacing: 10,
+                crossAxisSpacing: 10,
+                childAspectRatio: 1.45,
+                children: <Widget>[
+                  SummaryCard(
+                    title: text.totalMaterials,
+                    value: total,
+                    color: Colors.blue,
+                    onTap: () {
+                      openHierarchyInventory(
+                        context,
+                        InventoryUnitFilter.all,
+                        text.totalMaterials,
+                      );
+                    },
+                  ),
+                  SummaryCard(
+                    title: text.unused,
+                    value: unused,
+                    color: Colors.blueGrey,
+                    onTap: () {
+                      openHierarchyInventory(
+                        context,
+                        InventoryUnitFilter.unused,
+                        text.unused,
+                      );
+                    },
+                  ),
+                  SummaryCard(
+                    title: text.available,
+                    value: available,
+                    color: Colors.green,
+                    onTap: () {
+                      openHierarchyInventory(
+                        context,
+                        InventoryUnitFilter.available,
+                        text.available,
+                      );
+                    },
+                  ),
+                  SummaryCard(
+                    title: text.expiredOrEmpty,
+                    value: expired,
+                    color: Colors.red,
+                    onTap: () {
+                      openHierarchyInventory(
+                        context,
+                        InventoryUnitFilter.expiredOrEmpty,
+                        text.expiredOrEmpty,
+                      );
+                    },
+                  ),
+                ],
+              ),
+              const SizedBox(height: 18),
+              FilledButton.icon(
+                onPressed: () {
+                  openScanner(context);
+                },
+                icon: const Icon(Icons.qr_code_scanner),
+                label: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 15),
+                  child: Text(text.scanMaterial),
+                ),
+              ),
+              const SizedBox(height: 10),
+              FilledButton.tonalIcon(
+                onPressed: () async {
+                  await Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (BuildContext context) {
+                        return ProductInventoryScreen(
+                          repository: controller.inventory,
+                          actorId: user.id,
+                          canManage: user.isSuperAdmin,
+                        );
+                      },
+                    ),
+                  );
+                  controller.refresh();
+                },
+                icon: const Icon(Icons.account_tree_outlined),
+                label: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 13),
+                  child: Text(InventoryText(context).hierarchy),
+                ),
+              ),
+              const SizedBox(height: 10),
+              OutlinedButton.icon(
+                onPressed: () {
+                  openHierarchyInventory(
+                    context,
+                    InventoryUnitFilter.all,
+                    text.inventory,
+                  );
+                },
+                icon: const Icon(Icons.inventory_2),
+                label: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 13),
+                  child: Text(text.inventory),
+                ),
+              ),
+              if (user.isSuperAdmin) ...<Widget>[
+                const SizedBox(height: 10),
+                OutlinedButton.icon(
+                  onPressed: () async {
+                    await Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                        builder: (BuildContext context) {
+                          return UsersScreen(controller: controller);
+                        },
+                      ),
+                    );
+
+                    controller.refresh();
+                  },
+                  icon: const Icon(Icons.manage_accounts),
+                  label: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 13),
+                    child: Text(text.userManagement),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                OutlinedButton.icon(
+                  onPressed: () {
+                    Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                        builder: (BuildContext context) {
+                          return AuditScreen(controller: controller);
+                        },
+                      ),
+                    );
+                  },
+                  icon: const Icon(Icons.history),
+                  label: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 13),
+                    child: Text(text.auditTrail),
+                  ),
+                ),
+              ],
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+class SummaryCard extends StatelessWidget {
+  const SummaryCard({
+    super.key,
+    required this.title,
+    required this.value,
+    required this.color,
+    required this.onTap,
+  });
+
+  final String title;
+  final int value;
+  final Color color;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            border: Border(right: BorderSide(color: color, width: 7)),
+          ),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: <Widget>[
+              Text(
+                value.toString(),
+                style: const TextStyle(
+                  fontSize: 27,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              Text(title, textAlign: TextAlign.center),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class ScannedCode {
+  const ScannedCode({required this.rawValue, required this.format});
+
+  final String rawValue;
+  final String format;
+}
+
+class ScannerScreen extends StatefulWidget {
+  const ScannerScreen({super.key});
+
+  @override
+  State<ScannerScreen> createState() {
+    return _ScannerScreenState();
+  }
+}
+
+class _ScannerScreenState extends State<ScannerScreen>
+    with WidgetsBindingObserver {
+  late final MobileScannerController scanner;
+
+  bool locked = false;
+  bool showManualHint = false;
+  String lastValue = '';
+  Timer? manualTimer;
+
+  @override
+  void initState() {
+    super.initState();
+
+    scanner = MobileScannerController(
+      autoStart: false,
+      cameraResolution: const Size(1280, 720),
+      detectionSpeed: DetectionSpeed.normal,
+      detectionTimeoutMs: 250,
+      facing: CameraFacing.back,
+      formats: const <BarcodeFormat>[
+        BarcodeFormat.dataMatrix,
+        BarcodeFormat.qrCode,
+        BarcodeFormat.code128,
+        BarcodeFormat.code39,
+        BarcodeFormat.code93,
+        BarcodeFormat.ean8,
+        BarcodeFormat.ean13,
+        BarcodeFormat.upcA,
+        BarcodeFormat.upcE,
+        BarcodeFormat.itf,
+        BarcodeFormat.pdf417,
+        BarcodeFormat.aztec,
+        BarcodeFormat.codabar,
+      ],
+      returnImage: false,
+      autoZoom: true,
+    );
+
+    WidgetsBinding.instance.addObserver(this);
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        unawaited(scanner.start());
+      }
+    });
+
+    manualTimer = Timer(const Duration(seconds: 8), () {
+      if (mounted && !locked) {
+        setState(() {
+          showManualHint = true;
+        });
+      }
+    });
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (!scanner.value.hasCameraPermission) {
+      return;
+    }
+
+    if (state == AppLifecycleState.resumed) {
+      unawaited(scanner.start());
+      return;
+    }
+
+    if (state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.paused ||
+        state == AppLifecycleState.hidden) {
+      unawaited(scanner.stop());
+    }
+  }
+
+  Future<void> processCapture(BarcodeCapture capture) async {
+    if (locked) {
+      return;
+    }
+
+    Barcode? selected;
+
+    for (final Barcode barcode in capture.barcodes) {
+      final String value = barcode.rawValue?.trim() ?? '';
+
+      if (value.isNotEmpty) {
+        selected = barcode;
+        break;
+      }
+    }
+
+    if (selected == null) {
+      return;
+    }
+
+    final String value = selected.rawValue!.trim();
+
+    setState(() {
+      lastValue = value;
+    });
+
+    locked = true;
+    manualTimer?.cancel();
+
+    await HapticFeedback.lightImpact();
+    await SystemSound.play(SystemSoundType.click);
+
+    if (!mounted) {
+      return;
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(AppLocalizations.of(context).scanSuccess),
+        duration: const Duration(milliseconds: 700),
+      ),
+    );
+
+    await Future<void>.delayed(const Duration(milliseconds: 450));
+
+    if (!mounted) {
+      return;
+    }
+
+    Navigator.of(
+      context,
+    ).pop(ScannedCode(rawValue: value, format: selected.format.name));
+  }
+
+  Future<void> manualEntry() async {
+    final TextEditingController input = TextEditingController();
+
+    final String? result = await showDialog<String>(
+      context: context,
+      builder: (BuildContext dialogContext) {
+        final AppLocalizations text = AppLocalizations.of(dialogContext);
+
+        return AlertDialog(
+          title: Text(text.manualEntry),
+          content: TextField(
+            controller: input,
+            minLines: 2,
+            maxLines: 6,
+            autofocus: true,
+            decoration: InputDecoration(labelText: text.barcode),
+          ),
+          actions: <Widget>[
+            TextButton(
+              onPressed: () {
+                Navigator.of(dialogContext).pop();
+              },
+              child: Text(text.cancel),
+            ),
+            FilledButton(
+              onPressed: () {
+                final String value = input.text.trim();
+
+                if (value.isNotEmpty) {
+                  Navigator.of(dialogContext).pop(value);
+                }
+              },
+              child: Text(text.confirm),
+            ),
+          ],
+        );
+      },
+    );
+
+    input.dispose();
+
+    if (result != null && result.isNotEmpty && mounted) {
+      Navigator.of(
+        context,
+      ).pop(ScannedCode(rawValue: result, format: 'manual'));
+    }
+  }
+
+  Future<void> analyzeGallery() async {
+    final XFile? image = await ImagePicker().pickImage(
+      source: ImageSource.gallery,
+    );
+
+    if (image == null) {
+      return;
+    }
+
+    final BarcodeCapture? capture = await scanner.analyzeImage(image.path);
+
+    if (capture == null || capture.barcodes.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(AppLocalizations.of(context).scanFailedManual),
+          ),
+        );
+      }
+
+      return;
+    }
+
+    await processCapture(capture);
+  }
+
+  Future<void> restart() async {
+    locked = false;
+
+    setState(() {
+      lastValue = '';
+      showManualHint = false;
+    });
+
+    await scanner.stop();
+    await scanner.start();
+
+    manualTimer?.cancel();
+
+    manualTimer = Timer(const Duration(seconds: 8), () {
+      if (mounted && !locked) {
+        setState(() {
+          showManualHint = true;
+        });
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+
+    manualTimer?.cancel();
+    unawaited(scanner.dispose());
+
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final AppLocalizations text = AppLocalizations.of(context);
+
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        title: Text(text.scanMaterial),
+        actions: <Widget>[
+          IconButton(
+            tooltip: text.gallery,
+            onPressed: analyzeGallery,
+            icon: const Icon(Icons.photo_library),
+          ),
+          IconButton(
+            tooltip: text.manualEntry,
+            onPressed: manualEntry,
+            icon: const Icon(Icons.keyboard),
+          ),
+        ],
+      ),
+      body: Stack(
+        fit: StackFit.expand,
+        children: <Widget>[
+          MobileScanner(
+            controller: scanner,
+            onDetect: processCapture,
+            tapToFocus: true,
+            useAppLifecycleState: false,
+          ),
+          IgnorePointer(
+            child: Center(
+              child: Container(
+                width: min(MediaQuery.sizeOf(context).width * 0.82, 480),
+                height: 230,
+                decoration: BoxDecoration(
+                  border: Border.all(color: Colors.greenAccent, width: 3),
+                  borderRadius: BorderRadius.circular(18),
+                ),
+              ),
+            ),
+          ),
+          Positioned(
+            left: 16,
+            right: 16,
+            bottom: 20,
+            child: Card(
+              color: Colors.black87,
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: <Widget>[
+                    Text(
+                      text.scanHint,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    if (showManualHint) ...<Widget>[
+                      const SizedBox(height: 6),
+                      TextButton(
+                        onPressed: manualEntry,
+                        child: Text(text.scanFailedManual),
+                      ),
+                    ],
+                    if (lastValue.isNotEmpty) ...<Widget>[
+                      Text(
+                        '${text.lastRead}: '
+                        '$lastValue',
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(color: Colors.white70),
+                      ),
+                    ],
+                    const SizedBox(height: 8),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                      children: <Widget>[
+                        IconButton.filledTonal(
+                          tooltip: text.flash,
+                          onPressed: () async {
+                            await scanner.toggleTorch();
+                          },
+                          icon: const Icon(Icons.flash_on),
+                        ),
+                        IconButton.filledTonal(
+                          tooltip: text.retry,
+                          onPressed: restart,
+                          icon: const Icon(Icons.refresh),
+                        ),
+                        IconButton.filledTonal(
+                          tooltip: text.manualEntry,
+                          onPressed: manualEntry,
+                          icon: const Icon(Icons.keyboard),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class InventoryScreen extends StatefulWidget {
+  const InventoryScreen({
+    super.key,
+    required this.controller,
+    required this.initialFilter,
+  });
+
+  final AppController controller;
+  final MaterialFilter initialFilter;
+
+  @override
+  State<InventoryScreen> createState() {
+    return _InventoryScreenState();
+  }
+}
+
+class _InventoryScreenState extends State<InventoryScreen> {
+  late MaterialFilter filter;
+  final TextEditingController search = TextEditingController();
+
+  List<MaterialRecord> materials = <MaterialRecord>[];
+
+  bool loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    filter = widget.initialFilter;
+    load();
+  }
+
+  Future<void> load() async {
+    setState(() {
+      loading = true;
+    });
+
+    materials = await widget.controller.db.materials();
+
+    if (mounted) {
+      setState(() {
+        loading = false;
+      });
+    }
+  }
+
+  List<MaterialRecord> filtered() {
+    final String query = search.text.trim().toLowerCase();
+
+    Iterable<MaterialRecord> result = materials;
+
+    if (filter == MaterialFilter.all) {
+      result = result.where((MaterialRecord item) => !item.isArchived);
+    } else if (filter == MaterialFilter.available) {
+      result = result.where((MaterialRecord item) => item.isAvailable);
+    } else if (filter == MaterialFilter.expiredOrEmpty) {
+      result = result.where((MaterialRecord item) => item.isExpiredOrEmpty);
+    } else if (filter == MaterialFilter.unused) {
+      result = result.where((MaterialRecord item) => item.isUnused);
+    } else if (filter == MaterialFilter.archived) {
+      result = result.where((MaterialRecord item) => item.isArchived);
+    }
+
+    if (query.isNotEmpty) {
+      result = result.where((MaterialRecord item) {
+        return item.name.toLowerCase().contains(query) ||
+            item.rawBarcode.toLowerCase().contains(query) ||
+            item.serialNumber.toLowerCase().contains(query) ||
+            item.lotNumber.toLowerCase().contains(query) ||
+            item.gtin.toLowerCase().contains(query);
+      });
+    }
+
+    return result.toList();
+  }
+
+  String title(AppLocalizations text) {
+    switch (filter) {
+      case MaterialFilter.all:
+        return text.allMaterials;
+      case MaterialFilter.available:
+        return text.availableMaterials;
+      case MaterialFilter.expiredOrEmpty:
+        return text.expiredMaterials;
+      case MaterialFilter.unused:
+        return text.unusedMaterials;
+      case MaterialFilter.archived:
+        return text.archivedMaterials;
+    }
+  }
+
+  Future<void> addMaterial() async {
+    final int? id = await Navigator.of(context).push<int>(
+      MaterialPageRoute<int>(
+        builder: (BuildContext context) {
+          return MaterialFormScreen(controller: widget.controller);
+        },
+      ),
+    );
+
+    if (id != null) {
+      await load();
+      widget.controller.refresh();
+    }
+  }
+
+  Future<void> exportExcel(List<MaterialRecord> items) async {
+    final AppLocalizations text = AppLocalizations.of(context);
+
+    if (items.isEmpty) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(text.noMaterials)));
+
+      return;
+    }
+
+    final xls.Excel excel = xls.Excel.createExcel();
+
+    final String sheetName =
+        widget.controller.locale.languageCode == 'ar' ? 'المواد' : 'Materials';
+
+    final xls.Sheet sheet = excel[sheetName];
+
+    sheet.isRTL = widget.controller.locale.languageCode == 'ar';
+
+    sheet.appendRow(<xls.CellValue>[
+      xls.TextCellValue(text.internalNo),
+      xls.TextCellValue(text.name),
+      xls.TextCellValue(text.type),
+      xls.TextCellValue(text.barcode),
+      xls.TextCellValue(text.gtin),
+      xls.TextCellValue(text.lot),
+      xls.TextCellValue(text.serial),
+      xls.TextCellValue(text.department),
+      xls.TextCellValue(text.device),
+      xls.TextCellValue(text.originalQty),
+      xls.TextCellValue(text.usedQty),
+      xls.TextCellValue(text.remainingQty),
+      xls.TextCellValue(text.unit),
+      xls.TextCellValue(text.expiryDate),
+      xls.TextCellValue(text.status),
+    ]);
+
+    for (final MaterialRecord item in items) {
+      sheet.appendRow(<xls.CellValue>[
+        xls.TextCellValue(item.internalNo),
+        xls.TextCellValue(item.name),
+        xls.TextCellValue(item.type),
+        xls.TextCellValue(item.rawBarcode),
+        xls.TextCellValue(item.gtin),
+        xls.TextCellValue(item.lotNumber),
+        xls.TextCellValue(item.serialNumber),
+        xls.TextCellValue(item.department),
+        xls.TextCellValue(item.deviceName),
+        xls.DoubleCellValue(item.originalQuantity),
+        xls.DoubleCellValue(item.usedQuantity),
+        xls.DoubleCellValue(item.remainingQuantity),
+        xls.TextCellValue(item.unit),
+        xls.TextCellValue(formatDate(item.effectiveExpiry)),
+        xls.TextCellValue(item.status),
+      ]);
+    }
+
+    excel.delete('Sheet1');
+
+    final List<int>? bytes = excel.save();
+
+    if (bytes == null) {
+      return;
+    }
+
+    final Directory directory = await getTemporaryDirectory();
+
+    final File file = File(
+      path_util.join(
+        directory.path,
+        'SmartChem_Materials_'
+        '${DateTime.now().millisecondsSinceEpoch}'
+        '.xlsx',
+      ),
+    );
+
+    await file.writeAsBytes(bytes);
+
+    await widget.controller.db.audit(
+      actor: widget.controller.currentUser!,
+      entityType: 'report',
+      entityId: null,
+      action: 'EXPORT_EXCEL',
+      newValue: 'records=${items.length}',
+      reason: title(text),
+    );
+
+    await SharePlus.instance.share(
+      ShareParams(files: <XFile>[XFile(file.path)], text: text.exportExcel),
+    );
+  }
+
+  Future<void> exportPdf(List<MaterialRecord> items) async {
+    final AppLocalizations text = AppLocalizations.of(context);
+
+    if (items.isEmpty) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(text.noMaterials)));
+
+      return;
+    }
+
+    final pw.Font font = await PdfGoogleFonts.notoNaskhArabicRegular();
+
+    final pw.Font bold = await PdfGoogleFonts.notoNaskhArabicBold();
+
+    final bool arabic = widget.controller.locale.languageCode == 'ar';
+
+    final pw.Document document = pw.Document(
+      theme: pw.ThemeData.withFont(base: font, bold: bold),
+    );
+
+    final List<String> headers = <String>[
+      text.internalNo,
+      text.name,
+      text.type,
+      text.lot,
+      text.department,
+      text.originalQty,
+      text.usedQty,
+      text.remainingQty,
+      text.expiryDate,
+    ];
+
+    final List<List<String>> data =
+        items.map((MaterialRecord item) {
+          return <String>[
+            item.internalNo,
+            item.name,
+            item.type,
+            item.lotNumber,
+            item.department,
+            item.originalQuantity.toStringAsFixed(2),
+            item.usedQuantity.toStringAsFixed(2),
+            item.remainingQuantity.toStringAsFixed(2),
+            formatDate(item.effectiveExpiry),
+          ];
+        }).toList();
+
+    document.addPage(
+      pw.MultiPage(
+        pageFormat: PdfPageFormat.a4.landscape,
+        margin: const pw.EdgeInsets.all(24),
+        header: (pw.Context context) {
+          return pw.Directionality(
+            textDirection: arabic ? pw.TextDirection.rtl : pw.TextDirection.ltr,
+            child: pw.Column(
+              crossAxisAlignment: pw.CrossAxisAlignment.stretch,
+              children: <pw.Widget>[
+                pw.Text(
+                  text.appTitle,
+                  style: pw.TextStyle(font: bold, fontSize: 18),
+                ),
+                pw.Text(
+                  title(text),
+                  style: pw.TextStyle(font: bold, fontSize: 14),
+                ),
+                pw.Text(
+                  '${formatDate(DateTime.now(), includeTime: true)}'
+                  ' — ${widget.controller.currentUser!.fullName}',
+                ),
+                pw.SizedBox(height: 8),
+              ],
+            ),
+          );
+        },
+        footer: (pw.Context context) {
+          return pw.Align(
+            alignment: pw.Alignment.center,
+            child: pw.Text(
+              '${context.pageNumber} / '
+              '${context.pagesCount}',
+            ),
+          );
+        },
+        build: (pw.Context context) {
+          return <pw.Widget>[
+            pw.Directionality(
+              textDirection:
+                  arabic ? pw.TextDirection.rtl : pw.TextDirection.ltr,
+              child: pw.TableHelper.fromTextArray(
+                headers: headers,
+                data: data,
+                headerStyle: pw.TextStyle(font: bold, fontSize: 8),
+                cellStyle: pw.TextStyle(font: font, fontSize: 7),
+                headerDecoration: const pw.BoxDecoration(
+                  color: PdfColors.blueGrey200,
+                ),
+                cellAlignment: pw.Alignment.center,
+              ),
+            ),
+          ];
+        },
+      ),
+    );
+
+    final Uint8List bytes = await document.save();
+
+    await widget.controller.db.audit(
+      actor: widget.controller.currentUser!,
+      entityType: 'report',
+      entityId: null,
+      action: 'EXPORT_PDF',
+      newValue: 'records=${items.length}',
+      reason: title(text),
+    );
+
+    await Printing.sharePdf(bytes: bytes, filename: 'SmartChem_Materials.pdf');
+  }
+
+  @override
+  void dispose() {
+    search.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final AppLocalizations text = AppLocalizations.of(context);
+
+    final UserRecord user = widget.controller.currentUser!;
+
+    final List<MaterialRecord> items = filtered();
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(title(text)),
+        actions: <Widget>[
+          IconButton(
+            tooltip: text.refresh,
+            onPressed: load,
+            icon: const Icon(Icons.refresh),
+          ),
+          if (user.isSuperAdmin)
+            PopupMenuButton<String>(
+              tooltip: text.exportReport,
+              onSelected: (String value) {
+                if (value == 'pdf') {
+                  exportPdf(items);
+                } else {
+                  exportExcel(items);
+                }
+              },
+              itemBuilder: (BuildContext context) {
+                return <PopupMenuEntry<String>>[
+                  PopupMenuItem<String>(
+                    value: 'pdf',
+                    child: Text(text.exportPdf),
+                  ),
+                  PopupMenuItem<String>(
+                    value: 'excel',
+                    child: Text(text.exportExcel),
+                  ),
+                ];
+              },
+            ),
+        ],
+      ),
+      floatingActionButton:
+          user.isSuperAdmin
+              ? FloatingActionButton.extended(
+                onPressed: addMaterial,
+                icon: const Icon(Icons.add),
+                label: Text(text.addMaterial),
+              )
+              : null,
+      body: Column(
+        children: <Widget>[
+          Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              children: <Widget>[
+                TextField(
+                  controller: search,
+                  onChanged: (String value) {
+                    setState(() {});
+                  },
+                  decoration: InputDecoration(
+                    labelText: text.search,
+                    prefixIcon: const Icon(Icons.search),
+                    suffixIcon:
+                        search.text.isEmpty
+                            ? null
+                            : IconButton(
+                              onPressed: () {
+                                search.clear();
+                                setState(() {});
+                              },
+                              icon: const Icon(Icons.clear),
+                            ),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: SegmentedButton<MaterialFilter>(
+                    segments: <ButtonSegment<MaterialFilter>>[
+                      ButtonSegment<MaterialFilter>(
+                        value: MaterialFilter.all,
+                        label: Text(text.allMaterials),
+                      ),
+                      ButtonSegment<MaterialFilter>(
+                        value: MaterialFilter.available,
+                        label: Text(text.available),
+                      ),
+                      ButtonSegment<MaterialFilter>(
+                        value: MaterialFilter.expiredOrEmpty,
+                        label: Text(text.expiredOrEmpty),
+                      ),
+                      ButtonSegment<MaterialFilter>(
+                        value: MaterialFilter.unused,
+                        label: Text(text.unused),
+                      ),
+                      if (user.isSuperAdmin)
+                        ButtonSegment<MaterialFilter>(
+                          value: MaterialFilter.archived,
+                          label: Text(text.archived),
+                        ),
+                    ],
+                    selected: <MaterialFilter>{filter},
+                    onSelectionChanged: (Set<MaterialFilter> value) {
+                      setState(() {
+                        filter = value.first;
+                      });
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Expanded(
+            child:
+                loading
+                    ? const Center(child: CircularProgressIndicator())
+                    : items.isEmpty
+                    ? Center(
+                      child: Text(
+                        text.noMaterials,
+                        textAlign: TextAlign.center,
+                      ),
+                    )
+                    : RefreshIndicator(
+                      onRefresh: load,
+                      child: ListView.separated(
+                        padding: const EdgeInsets.fromLTRB(12, 0, 12, 100),
+                        itemCount: items.length,
+                        separatorBuilder: (BuildContext context, int index) {
+                          return const SizedBox(height: 8);
+                        },
+                        itemBuilder: (BuildContext context, int index) {
+                          final MaterialRecord item = items[index];
+
+                          return Card(
+                            clipBehavior: Clip.antiAlias,
+                            child: InkWell(
+                              onTap: () async {
+                                await Navigator.of(context).push(
+                                  MaterialPageRoute<void>(
+                                    builder: (BuildContext context) {
+                                      return MaterialDetailsScreen(
+                                        controller: widget.controller,
+                                        materialId: item.id,
+                                      );
+                                    },
+                                  ),
+                                );
+
+                                await load();
+                              },
+                              child: Padding(
+                                padding: const EdgeInsets.all(14),
+                                child: Column(
+                                  crossAxisAlignment:
+                                      CrossAxisAlignment.stretch,
+                                  children: <Widget>[
+                                    Text(
+                                      item.name,
+                                      style: Theme.of(
+                                        context,
+                                      ).textTheme.titleMedium?.copyWith(
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 5),
+                                    Text(
+                                      '${text.type}: '
+                                      '${item.type}',
+                                    ),
+                                    Text(
+                                      '${text.internalNo}: '
+                                      '${item.internalNo}',
+                                    ),
+                                    Text(
+                                      '${text.lot}: '
+                                      '${item.lotNumber.isEmpty ? '-' : item.lotNumber}',
+                                    ),
+                                    Text(
+                                      '${text.department}: '
+                                      '${item.department.isEmpty ? '-' : item.department}',
+                                    ),
+                                    const Divider(),
+                                    Wrap(
+                                      spacing: 14,
+                                      runSpacing: 6,
+                                      children: <Widget>[
+                                        Text(
+                                          '${text.originalQty}: '
+                                          '${item.originalQuantity.toStringAsFixed(2)} '
+                                          '${item.unit}',
+                                        ),
+                                        Text(
+                                          '${text.usedQty}: '
+                                          '${item.usedQuantity.toStringAsFixed(2)}',
+                                        ),
+                                        Text(
+                                          '${text.remainingQty}: '
+                                          '${item.remainingQuantity.toStringAsFixed(2)}',
+                                          style: TextStyle(
+                                            fontWeight: FontWeight.bold,
+                                            color:
+                                                item.remainingQuantity <= 0
+                                                    ? Colors.red
+                                                    : Colors.green,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class MaterialFormScreen extends StatefulWidget {
+  const MaterialFormScreen({
+    super.key,
+    required this.controller,
+    this.material,
+    this.rawBarcode = '',
+    this.barcodeFormat = '',
+    this.parsed,
+  });
+
+  final AppController controller;
+  final MaterialRecord? material;
+  final String rawBarcode;
+  final String barcodeFormat;
+  final ParsedGs1? parsed;
+
+  @override
+  State<MaterialFormScreen> createState() {
+    return _MaterialFormScreenState();
+  }
+}
+
+class _MaterialFormScreenState extends State<MaterialFormScreen> {
+  late final TextEditingController internalNo;
+
+  late final TextEditingController name;
+  late final TextEditingController barcode;
+  late final TextEditingController gtin;
+  late final TextEditingController lot;
+  late final TextEditingController serial;
+  late final TextEditingController catalog;
+  late final TextEditingController department;
+  late final TextEditingController device;
+  late final TextEditingController storage;
+  late final TextEditingController manufacturer;
+  late final TextEditingController originalQty;
+  late final TextEditingController unit;
+  late final TextEditingController minStock;
+  late final TextEditingController receiptDate;
+  late final TextEditingController expiryDate;
+  late final TextEditingController openedDate;
+  late final TextEditingController afterOpenDate;
+  late final TextEditingController notes;
+  late final TextEditingController reason;
+
+  String type = 'Reagent';
+  bool approved = false;
+  bool blocked = false;
+  bool saving = false;
+
+  @override
+  void initState() {
+    super.initState();
+
+    final MaterialRecord? item = widget.material;
+
+    final ParsedGs1? parsed = widget.parsed;
+
+    internalNo = TextEditingController(
+      text: item?.internalNo ?? 'MAT-${DateTime.now().millisecondsSinceEpoch}',
+    );
+
+    name = TextEditingController(text: item?.name ?? '');
+
+    barcode = TextEditingController(
+      text: item?.rawBarcode ?? widget.rawBarcode,
+    );
+
+    gtin = TextEditingController(text: item?.gtin ?? parsed?.gtin ?? '');
+
+    lot = TextEditingController(text: item?.lotNumber ?? parsed?.lot ?? '');
+
+    serial = TextEditingController(
+      text: item?.serialNumber ?? parsed?.serial ?? '',
+    );
+
+    catalog = TextEditingController(
+      text: item?.catalogNumber ?? parsed?.catalog ?? '',
+    );
+
+    department = TextEditingController(text: item?.department ?? '');
+
+    device = TextEditingController(text: item?.deviceName ?? '');
+
+    storage = TextEditingController(text: item?.storageLocation ?? '');
+
+    manufacturer = TextEditingController(text: item?.manufacturer ?? '');
+
+    originalQty = TextEditingController(
+      text: item == null ? '' : item.originalQuantity.toString(),
+    );
+
+    unit = TextEditingController(text: item?.unit ?? 'mL');
+
+    minStock = TextEditingController(
+      text: item == null ? '0' : item.minStock.toString(),
+    );
+
+    receiptDate = TextEditingController(
+      text:
+          item == null
+              ? DateFormat('yyyy-MM-dd').format(DateTime.now())
+              : item.receivedAt?.toIso8601String().substring(0, 10) ?? '',
+    );
+
+    expiryDate = TextEditingController(
+      text:
+          item == null
+              ? parsed?.expiryDate?.toIso8601String().substring(0, 10) ?? ''
+              : item.manufacturerExpiry?.toIso8601String().substring(0, 10) ??
+                  '',
+    );
+
+    openedDate = TextEditingController(
+      text: item?.openedAt?.toIso8601String().substring(0, 10) ?? '',
+    );
+
+    afterOpenDate = TextEditingController(
+      text: item?.afterOpenExpiry?.toIso8601String().substring(0, 10) ?? '',
+    );
+
+    notes = TextEditingController(text: item?.notes ?? '');
+
+    reason = TextEditingController(
+      text: item == null ? 'تسجيل مادة جديدة' : '',
+    );
+
+    type = item?.type ?? 'Reagent';
+    approved = item?.isApproved ?? false;
+    blocked = item?.isBlocked ?? false;
+  }
+
+  Future<void> save() async {
+    final AppLocalizations text = AppLocalizations.of(context);
+
+    if (name.text.trim().isEmpty ||
+        internalNo.text.trim().isEmpty ||
+        unit.text.trim().isEmpty ||
+        originalQty.text.trim().isEmpty ||
+        reason.text.trim().isEmpty) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(text.enterRequired)));
+
+      return;
+    }
+
+    final double quantity = numberValue(normalizedDigits(originalQty.text));
+
+    if (quantity < 0 ||
+        (widget.material != null && quantity < widget.material!.usedQuantity)) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(text.invalidQuantity)));
+
+      return;
+    }
+
+    setState(() {
+      saving = true;
+    });
+
+    try {
+      final int id = await widget.controller.db.saveMaterial(
+        actor: widget.controller.currentUser!,
+        materialId: widget.material?.id,
+        reason: reason.text.trim(),
+        values: <String, Object?>{
+          'internal_no': internalNo.text.trim(),
+          'name': name.text.trim(),
+          'type': type,
+          'raw_barcode_value': barcode.text.trim(),
+          'barcode_format':
+              widget.material?.barcodeFormat ?? widget.barcodeFormat,
+          'gtin': gtin.text.trim(),
+          'lot_number': lot.text.trim(),
+          'serial_number': serial.text.trim(),
+          'catalog_number': catalog.text.trim(),
+          'department': department.text.trim(),
+          'device_name': device.text.trim(),
+          'storage_location': storage.text.trim(),
+          'manufacturer': manufacturer.text.trim(),
+          'original_quantity': quantity,
+          'unit': unit.text.trim(),
+          'min_stock': numberValue(normalizedDigits(minStock.text)),
+          'received_at': parseDateValue(receiptDate.text)?.toIso8601String(),
+          'manufacturer_expiry':
+              parseDateValue(expiryDate.text)?.toIso8601String(),
+          'opened_at': parseDateValue(openedDate.text)?.toIso8601String(),
+          'after_open_expiry':
+              parseDateValue(afterOpenDate.text)?.toIso8601String(),
+          'is_approved': approved ? 1 : 0,
+          'is_blocked': blocked ? 1 : 0,
+          'notes': notes.text.trim(),
+        },
+      );
+
+      widget.controller.refresh();
+
+      if (mounted) {
+        Navigator.of(context).pop(id);
+      }
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(error.toString())));
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          saving = false;
+        });
+      }
+    }
+  }
+
+  Widget field(
+    TextEditingController controller,
+    String label, {
+    TextInputType? keyboardType,
+    int maxLines = 1,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: TextField(
+        controller: controller,
+        keyboardType: keyboardType,
+        maxLines: maxLines,
+        decoration: InputDecoration(labelText: label),
+      ),
+    );
+  }
+
+  @override
+  void dispose() {
+    for (final TextEditingController item in <TextEditingController>[
+      internalNo,
+      name,
+      barcode,
+      gtin,
+      lot,
+      serial,
+      catalog,
+      department,
+      device,
+      storage,
+      manufacturer,
+      originalQty,
+      unit,
+      minStock,
+      receiptDate,
+      expiryDate,
+      openedDate,
+      afterOpenDate,
+      notes,
+      reason,
+    ]) {
+      item.dispose();
+    }
+
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final AppLocalizations text = AppLocalizations.of(context);
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(
+          widget.material == null ? text.addMaterial : text.editMaterial,
+        ),
+      ),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: <Widget>[
+          field(internalNo, text.internalNo),
+          field(name, text.name),
+          DropdownButtonFormField<String>(
+            initialValue: type,
+            decoration: InputDecoration(labelText: text.type),
+            items:
+                const <String>['Reagent', 'Control', 'Calibrator'].map((
+                  String value,
+                ) {
+                  return DropdownMenuItem<String>(
+                    value: value,
+                    child: Text(value),
+                  );
+                }).toList(),
+            onChanged: (String? value) {
+              if (value != null) {
+                setState(() {
+                  type = value;
+                });
+              }
+            },
+          ),
+          const SizedBox(height: 12),
+          field(barcode, text.rawBarcode, maxLines: 3),
+          field(gtin, text.gtin),
+          field(lot, text.lot),
+          field(serial, text.serial),
+          field(catalog, text.catalog),
+          field(department, text.department),
+          field(device, text.device),
+          field(storage, text.storage),
+          field(manufacturer, text.manufacturer),
+          field(
+            originalQty,
+            text.originalQty,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          ),
+          field(unit, text.unit),
+          field(receiptDate, '${text.receiptDate} YYYY-MM-DD'),
+          field(expiryDate, '${text.expiryDate} YYYY-MM-DD'),
+          field(openedDate, '${text.openDate} YYYY-MM-DD'),
+          field(afterOpenDate, '${text.afterOpenExpiry} YYYY-MM-DD'),
+          SwitchListTile(
+            value: approved,
+            title: Text(text.approved),
+            onChanged: (bool value) {
+              setState(() {
+                approved = value;
+              });
+            },
+          ),
+          SwitchListTile(
+            value: blocked,
+            title: Text(text.blocked),
+            onChanged: (bool value) {
+              setState(() {
+                blocked = value;
+              });
+            },
+          ),
+          field(notes, text.notes, maxLines: 4),
+          field(reason, text.reason, maxLines: 2),
+          FilledButton.icon(
+            onPressed: saving ? null : save,
+            icon: const Icon(Icons.save),
+            label: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 14),
+              child:
+                  saving ? const CircularProgressIndicator() : Text(text.save),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class MaterialDetailsScreen extends StatefulWidget {
+  const MaterialDetailsScreen({
+    super.key,
+    required this.controller,
+    required this.materialId,
+  });
+
+  final AppController controller;
+  final int materialId;
+
+  @override
+  State<MaterialDetailsScreen> createState() {
+    return _MaterialDetailsScreenState();
+  }
+}
+
+class _MaterialDetailsScreenState extends State<MaterialDetailsScreen> {
+  MaterialRecord? material;
+  List<UsageRecord> usages = <UsageRecord>[];
+
+  bool loading = true;
+
+  Future<void> load() async {
+    material = await widget.controller.db.materialById(widget.materialId);
+
+    usages = await widget.controller.db.usageRecords(widget.materialId);
+
+    if (mounted) {
+      setState(() {
+        loading = false;
+      });
+    }
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    load();
+  }
+
+  Future<String?> askReason(String title) async {
+    final TextEditingController input = TextEditingController();
+
+    final String? result = await showDialog<String>(
+      context: context,
+      builder: (BuildContext dialogContext) {
+        final AppLocalizations text = AppLocalizations.of(dialogContext);
+
+        return AlertDialog(
+          title: Text(title),
+          content: TextField(
+            controller: input,
+            autofocus: true,
+            maxLines: 3,
+            decoration: InputDecoration(labelText: text.reason),
+          ),
+          actions: <Widget>[
+            TextButton(
+              onPressed: () {
+                Navigator.of(dialogContext).pop();
+              },
+              child: Text(text.cancel),
+            ),
+            FilledButton(
+              onPressed: () {
+                if (input.text.trim().isNotEmpty) {
+                  Navigator.of(dialogContext).pop(input.text.trim());
+                }
+              },
+              child: Text(text.confirm),
+            ),
+          ],
+        );
+      },
+    );
+
+    input.dispose();
+    return result;
+  }
+
+  Future<void> recordUsage() async {
+    final AppLocalizations text = AppLocalizations.of(context);
+
+    final TextEditingController quantity = TextEditingController();
+
+    final TextEditingController note = TextEditingController();
+
+    final bool? confirmed = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext dialogContext) {
+        return AlertDialog(
+          title: Text(text.recordUsage),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              Text(
+                '${text.remainingQty}: '
+                '${material!.remainingQuantity.toStringAsFixed(2)} '
+                '${material!.unit}',
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: quantity,
+                autofocus: true,
+                keyboardType: const TextInputType.numberWithOptions(
+                  decimal: true,
+                ),
+                decoration: InputDecoration(labelText: text.quantity),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: note,
+                maxLines: 2,
+                decoration: InputDecoration(labelText: text.usageReason),
+              ),
+            ],
+          ),
+          actions: <Widget>[
+            TextButton(
+              onPressed: () {
+                Navigator.of(dialogContext).pop(false);
+              },
+              child: Text(text.cancel),
+            ),
+            FilledButton(
+              onPressed: () {
+                Navigator.of(dialogContext).pop(true);
+              },
+              child: Text(text.confirm),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmed == true) {
+      try {
+        await widget.controller.db.recordUsage(
+          actor: widget.controller.currentUser!,
+          materialId: widget.materialId,
+          quantity: numberValue(normalizedDigits(quantity.text)),
+          note: note.text.trim(),
+        );
+
+        widget.controller.refresh();
+        await load();
+      } catch (error) {
+        if (mounted) {
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text(text.invalidQuantity)));
+        }
+      }
+    }
+
+    quantity.dispose();
+    note.dispose();
+  }
+
+  Future<void> editUsage(UsageRecord usage) async {
+    final AppLocalizations text = AppLocalizations.of(context);
+
+    final TextEditingController quantity = TextEditingController(
+      text: usage.usedQuantity.toString(),
+    );
+
+    final TextEditingController reason = TextEditingController();
+
+    final bool? confirmed = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext dialogContext) {
+        return AlertDialog(
+          title: Text(text.editUsage),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              TextField(
+                controller: quantity,
+                keyboardType: const TextInputType.numberWithOptions(
+                  decimal: true,
+                ),
+                decoration: InputDecoration(labelText: text.usedQty),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: reason,
+                maxLines: 3,
+                decoration: InputDecoration(labelText: text.reason),
+              ),
+            ],
+          ),
+          actions: <Widget>[
+            TextButton(
+              onPressed: () {
+                Navigator.of(dialogContext).pop(false);
+              },
+              child: Text(text.cancel),
+            ),
+            FilledButton(
+              onPressed: () {
+                Navigator.of(dialogContext).pop(true);
+              },
+              child: Text(text.confirm),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmed == true) {
+      try {
+        await widget.controller.db.editUsage(
+          actor: widget.controller.currentUser!,
+          usageId: usage.id,
+          newQuantity: numberValue(normalizedDigits(quantity.text)),
+          reason: reason.text.trim(),
+        );
+
+        widget.controller.refresh();
+        await load();
+      } catch (error) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                error.toString().contains('ADMIN_ONLY')
+                    ? text.adminOnly
+                    : text.invalidQuantity,
+              ),
+            ),
+          );
+        }
+      }
+    }
+
+    quantity.dispose();
+    reason.dispose();
+  }
+
+  Widget row(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 5),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          SizedBox(
+            width: 145,
+            child: Text(
+              label,
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+          ),
+          Expanded(child: SelectableText(value.isEmpty ? '-' : value)),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final AppLocalizations text = AppLocalizations.of(context);
+
+    if (loading || material == null) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
+
+    final MaterialRecord item = material!;
+
+    final UserRecord actor = widget.controller.currentUser!;
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(text.details),
+        actions: <Widget>[
+          if (actor.isSuperAdmin)
+            IconButton(
+              tooltip: text.editMaterial,
+              onPressed: () async {
+                await Navigator.of(context).push<int>(
+                  MaterialPageRoute<int>(
+                    builder: (BuildContext context) {
+                      return MaterialFormScreen(
+                        controller: widget.controller,
+                        material: item,
+                      );
+                    },
+                  ),
+                );
+
+                await load();
+              },
+              icon: const Icon(Icons.edit),
+            ),
+        ],
+      ),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: <Widget>[
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: <Widget>[
+                  Text(
+                    item.name,
+                    style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const Divider(),
+                  row(text.internalNo, item.internalNo),
+                  row(text.type, item.type),
+                  row(text.rawBarcode, item.rawBarcode),
+                  row(text.barcodeFormat, item.barcodeFormat),
+                  row(text.gtin, item.gtin),
+                  row(text.lot, item.lotNumber),
+                  row(text.serial, item.serialNumber),
+                  row(text.catalog, item.catalogNumber),
+                  row(text.department, item.department),
+                  row(text.device, item.deviceName),
+                  row(text.storage, item.storageLocation),
+                  row(text.manufacturer, item.manufacturer),
+                  row(
+                    text.originalQty,
+                    '${item.originalQuantity.toStringAsFixed(2)} '
+                    '${item.unit}',
+                  ),
+                  row(text.usedQty, item.usedQuantity.toStringAsFixed(2)),
+                  row(
+                    text.remainingQty,
+                    item.remainingQuantity.toStringAsFixed(2),
+                  ),
+                  row(text.receiptDate, formatDate(item.receivedAt)),
+                  row(text.expiryDate, formatDate(item.manufacturerExpiry)),
+                  row(text.openDate, formatDate(item.openedAt)),
+                  row(text.afterOpenExpiry, formatDate(item.afterOpenExpiry)),
+                  row(text.registeredBy, item.createdBy),
+                  row(text.lastUsedBy, item.lastUsedBy),
+                  row(
+                    text.lastUsedAt,
+                    formatDate(item.lastUsedAt, includeTime: true),
+                  ),
+                  row(text.notes, item.notes),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          FilledButton.icon(
+            onPressed: item.isArchived ? null : recordUsage,
+            icon: const Icon(Icons.science_outlined),
+            label: Text(text.recordUsage),
+          ),
+          if (actor.isSuperAdmin) ...<Widget>[
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: <Widget>[
+                OutlinedButton(
+                  onPressed: () async {
+                    final String? reason = await askReason(
+                      item.isApproved ? text.unapprove : text.approve,
+                    );
+
+                    if (reason != null) {
+                      await widget.controller.db.setMaterialFlag(
+                        actor: actor,
+                        materialId: item.id,
+                        column: 'is_approved',
+                        value: !item.isApproved,
+                        action:
+                            item.isApproved
+                                ? 'UNAPPROVE_MATERIAL'
+                                : 'APPROVE_MATERIAL',
+                        reason: reason,
+                      );
+
+                      await load();
+                      widget.controller.refresh();
+                    }
+                  },
+                  child: Text(item.isApproved ? text.unapprove : text.approve),
+                ),
+                OutlinedButton(
+                  onPressed: () async {
+                    final String? reason = await askReason(
+                      item.isBlocked ? text.unblock : text.block,
+                    );
+
+                    if (reason != null) {
+                      await widget.controller.db.setMaterialFlag(
+                        actor: actor,
+                        materialId: item.id,
+                        column: 'is_blocked',
+                        value: !item.isBlocked,
+                        action:
+                            item.isBlocked
+                                ? 'UNBLOCK_MATERIAL'
+                                : 'BLOCK_MATERIAL',
+                        reason: reason,
+                      );
+
+                      await load();
+                      widget.controller.refresh();
+                    }
+                  },
+                  child: Text(item.isBlocked ? text.unblock : text.block),
+                ),
+                if (!item.isArchived)
+                  OutlinedButton.icon(
+                    onPressed: () async {
+                      final String? reason = await askReason(
+                        text.deleteMaterial,
+                      );
+
+                      if (reason != null) {
+                        await widget.controller.db.archiveMaterial(
+                          actor: actor,
+                          materialId: item.id,
+                          reason: reason,
+                        );
+
+                        if (context.mounted) {
+                          Navigator.of(context).pop();
+                        }
+
+                        widget.controller.refresh();
+                      }
+                    },
+                    icon: const Icon(Icons.archive),
+                    label: Text(text.deleteMaterial),
+                  )
+                else
+                  OutlinedButton.icon(
+                    onPressed: () async {
+                      final String? reason = await askReason(
+                        text.restoreMaterial,
+                      );
+
+                      if (reason != null) {
+                        await widget.controller.db.restoreMaterial(
+                          actor: actor,
+                          materialId: item.id,
+                          reason: reason,
+                        );
+
+                        await load();
+                        widget.controller.refresh();
+                      }
+                    },
+                    icon: const Icon(Icons.restore),
+                    label: Text(text.restoreMaterial),
+                  ),
+              ],
+            ),
+          ],
+          const SizedBox(height: 18),
+          Text(
+            text.usageHistory,
+            style: Theme.of(context).textTheme.titleLarge,
+          ),
+          const SizedBox(height: 8),
+          if (usages.isEmpty)
+            const Card(
+              child: Padding(padding: EdgeInsets.all(16), child: Text('-')),
+            ),
+          ...usages.map((UsageRecord usage) {
+            final bool editable =
+                actor.isSuperAdmin || usage.userId == actor.id;
+
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Card(
+                child: ListTile(
+                  title: Text(
+                    '${usage.usedQuantity.toStringAsFixed(2)} '
+                    '${item.unit}',
+                  ),
+                  subtitle: Text(
+                    '${usage.userName}\n'
+                    '${formatDate(usage.createdAt, includeTime: true)}'
+                    '${usage.editReason.isEmpty ? '' : '\n${text.reason}: ${usage.editReason}'}',
+                  ),
+                  isThreeLine: true,
+                  trailing:
+                      editable
+                          ? IconButton(
+                            onPressed: () {
+                              editUsage(usage);
+                            },
+                            icon: const Icon(Icons.edit),
+                          )
+                          : null,
+                ),
+              ),
+            );
+          }),
+        ],
+      ),
+    );
+  }
+}
+
+class UsersScreen extends StatefulWidget {
+  const UsersScreen({super.key, required this.controller});
+
+  final AppController controller;
+
+  @override
+  State<UsersScreen> createState() {
+    return _UsersScreenState();
+  }
+}
+
+class _UsersScreenState extends State<UsersScreen> {
+  List<UserRecord> users = <UserRecord>[];
+
+  bool loading = true;
+
+  Future<void> load() async {
+    users = await widget.controller.db.users();
+
+    if (mounted) {
+      setState(() {
+        loading = false;
+      });
+    }
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    load();
+  }
+
+  Future<void> openForm([UserRecord? user]) async {
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (BuildContext context) {
+          return UserFormScreen(controller: widget.controller, user: user);
+        },
+      ),
+    );
+
+    await load();
+  }
+
+  Future<void> downloadTemplate() async {
+    final AppLocalizations text = AppLocalizations.of(context);
+
+    final xls.Excel excel = xls.Excel.createExcel();
+
+    final xls.Sheet sheet = excel['Users'];
+
+    sheet.isRTL = true;
+
+    sheet.appendRow(<xls.CellValue>[
+      xls.TextCellValue('اسم الشخص'),
+      xls.TextCellValue('اسم المستخدم'),
+      xls.TextCellValue('الرقم السري'),
+      xls.TextCellValue('الرقم الوظيفي'),
+      xls.TextCellValue('القسم'),
+      xls.TextCellValue('الدور'),
+      xls.TextCellValue('حالة الحساب'),
+    ]);
+
+    sheet.appendRow(<xls.CellValue>[
+      xls.TextCellValue('مثال مستخدم'),
+      xls.TextCellValue('example.user'),
+      xls.TextCellValue('Example@1234'),
+      xls.TextCellValue('1001'),
+      xls.TextCellValue('المختبر'),
+      xls.TextCellValue('user'),
+      xls.TextCellValue('active'),
+    ]);
+
+    excel.delete('Sheet1');
+
+    final List<int>? bytes = excel.save();
+
+    if (bytes == null) {
+      return;
+    }
+
+    final Directory directory = await getTemporaryDirectory();
+
+    final File file = File(
+      path_util.join(directory.path, 'SmartChem_Users_Template.xlsx'),
+    );
+
+    await file.writeAsBytes(bytes);
+
+    await SharePlus.instance.share(
+      ShareParams(files: <XFile>[XFile(file.path)], text: text.excelTemplate),
+    );
+  }
+
+  Future<void> importUsers() async {
+    final AppLocalizations text = AppLocalizations.of(context);
+
+    const XTypeGroup excelTypeGroup = XTypeGroup(
+      label: 'Excel workbook',
+      extensions: <String>['xlsx'],
+      mimeTypes: <String>[
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      ],
+    );
+
+    final XFile? selectedFile = await openFile(
+      acceptedTypeGroups: <XTypeGroup>[excelTypeGroup],
+    );
+
+    if (selectedFile == null) {
+      return;
+    }
+
+    final Uint8List bytes = await selectedFile.readAsBytes();
+
+    final xls.Excel workbook = xls.Excel.decodeBytes(bytes);
+
+    if (workbook.tables.isEmpty) {
+      return;
+    }
+
+    final xls.Sheet sheet = workbook.tables.values.first;
+
+    if (sheet.rows.isEmpty) {
+      return;
+    }
+
+    final List<String> headers =
+        sheet.rows.first
+            .map((xls.Data? cell) => cell?.value.toString().trim() ?? '')
+            .toList();
+
+    int indexOf(List<String> names) {
+      for (final String name in names) {
+        final int index = headers.indexWhere(
+          (String header) => header.toLowerCase() == name.toLowerCase(),
+        );
+
+        if (index >= 0) {
+          return index;
+        }
+      }
+
+      return -1;
+    }
+
+    final int nameIndex = indexOf(<String>['اسم الشخص', 'full name']);
+
+    final int usernameIndex = indexOf(<String>['اسم المستخدم', 'username']);
+
+    final int passwordIndex = indexOf(<String>['الرقم السري', 'password']);
+
+    final int employeeIndex = indexOf(<String>[
+      'الرقم الوظيفي',
+      'employee number',
+    ]);
+
+    final int departmentIndex = indexOf(<String>['القسم', 'department']);
+
+    final int roleIndex = indexOf(<String>['الدور', 'role']);
+
+    final int activeIndex = indexOf(<String>['حالة الحساب', 'account status']);
+
+    if (nameIndex < 0 || usernameIndex < 0 || passwordIndex < 0) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(text.enterRequired)));
+      }
+
+      return;
+    }
+
+    final List<Map<String, String>> validRows = <Map<String, String>>[];
+
+    final List<String> errors = <String>[];
+
+    final Set<String> usernames = <String>{};
+
+    for (int rowIndex = 1; rowIndex < sheet.rows.length; rowIndex++) {
+      final List<xls.Data?> row = sheet.rows[rowIndex];
+
+      String valueAt(int index) {
+        if (index < 0 || index >= row.length) {
+          return '';
+        }
+
+        return row[index]?.value.toString().trim() ?? '';
+      }
+
+      final String fullName = valueAt(nameIndex);
+
+      final String username = valueAt(usernameIndex);
+
+      final String password = valueAt(passwordIndex);
+
+      if (fullName.isEmpty || username.isEmpty || password.isEmpty) {
+        errors.add('Row ${rowIndex + 1}: required data missing');
+
+        continue;
+      }
+
+      if (!usernames.add(username.toLowerCase())) {
+        errors.add('Row ${rowIndex + 1}: duplicate username');
+
+        continue;
+      }
+
+      validRows.add(<String, String>{
+        'full_name': fullName,
+        'username': username,
+        'password': password,
+        'employee_no': valueAt(employeeIndex),
+        'department': valueAt(departmentIndex),
+        'role': valueAt(roleIndex),
+        'active': valueAt(activeIndex),
+      });
+    }
+
+    if (!mounted) {
+      return;
+    }
+
+    final bool? confirmed = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext dialogContext) {
+        return AlertDialog(
+          title: Text(text.importExcel),
+          content: Text(
+            'Valid: ${validRows.length}\n'
+            'Errors: ${errors.length}\n\n'
+            '${errors.take(10).join('\n')}',
+          ),
+          actions: <Widget>[
+            TextButton(
+              onPressed: () {
+                Navigator.of(dialogContext).pop(false);
+              },
+              child: Text(text.cancel),
+            ),
+            FilledButton(
+              onPressed:
+                  validRows.isEmpty
+                      ? null
+                      : () {
+                        Navigator.of(dialogContext).pop(true);
+                      },
+              child: Text(text.confirm),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmed != true) {
+      return;
+    }
+
+    int imported = 0;
+    int failed = 0;
+
+    for (final Map<String, String> row in validRows) {
+      try {
+        final String role =
+            row['role']?.toLowerCase() == 'super_admin'
+                ? 'super_admin'
+                : 'user';
+
+        final String activeText = row['active']?.toLowerCase() ?? '';
+
+        await widget.controller.db.saveUser(
+          actor: widget.controller.currentUser!,
+          fullName: row['full_name']!,
+          username: row['username']!,
+          password: row['password']!,
+          employeeNo: row['employee_no'] ?? '',
+          department: row['department'] ?? '',
+          role: role,
+          isActive: activeText != 'inactive' && activeText != 'موقوف',
+          isArchived: false,
+          reason:
+              'Excel import: '
+              '${selectedFile.name}',
+        );
+
+        imported++;
+      } catch (error) {
+        failed++;
+      }
+    }
+
+    await widget.controller.db.audit(
+      actor: widget.controller.currentUser!,
+      entityType: 'user_import',
+      entityId: null,
+      action: 'IMPORT_USERS_EXCEL',
+      newValue: 'imported=$imported, failed=$failed',
+      reason: selectedFile.name,
+    );
+
+    await load();
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Imported: $imported, '
+            'Failed: $failed',
+          ),
+        ),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final AppLocalizations text = AppLocalizations.of(context);
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(text.userManagement),
+        actions: <Widget>[
+          PopupMenuButton<String>(
+            onSelected: (String value) {
+              if (value == 'import') {
+                importUsers();
+              } else {
+                downloadTemplate();
+              }
+            },
+            itemBuilder: (BuildContext context) {
+              return <PopupMenuEntry<String>>[
+                PopupMenuItem<String>(
+                  value: 'import',
+                  child: Text(text.importExcel),
+                ),
+                PopupMenuItem<String>(
+                  value: 'template',
+                  child: Text(text.excelTemplate),
+                ),
+              ];
+            },
+          ),
+        ],
+      ),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: openForm,
+        icon: const Icon(Icons.add),
+        label: Text(text.addUser),
+      ),
+      body:
+          loading
+              ? const Center(child: CircularProgressIndicator())
+              : ListView.separated(
+                padding: const EdgeInsets.fromLTRB(12, 12, 12, 100),
+                itemCount: users.length,
+                separatorBuilder: (BuildContext context, int index) {
+                  return const SizedBox(height: 8);
+                },
+                itemBuilder: (BuildContext context, int index) {
+                  final UserRecord user = users[index];
+
+                  return Card(
+                    child: ListTile(
+                      onTap: () {
+                        openForm(user);
+                      },
+                      leading: CircleAvatar(
+                        child: Icon(
+                          user.isSuperAdmin
+                              ? Icons.admin_panel_settings
+                              : Icons.person,
+                        ),
+                      ),
+                      title: Text(user.fullName),
+                      subtitle: Text(
+                        '${user.username}\n'
+                        '${user.department}\n'
+                        '${user.isSuperAdmin ? text.superAdmin : text.normalUser}',
+                      ),
+                      isThreeLine: true,
+                      trailing: Icon(
+                        user.isActive && !user.isArchived
+                            ? Icons.check_circle
+                            : Icons.block,
+                        color:
+                            user.isActive && !user.isArchived
+                                ? Colors.green
+                                : Colors.red,
+                      ),
+                    ),
+                  );
+                },
+              ),
+    );
+  }
+}
+
+class UserFormScreen extends StatefulWidget {
+  const UserFormScreen({super.key, required this.controller, this.user});
+
+  final AppController controller;
+  final UserRecord? user;
+
+  @override
+  State<UserFormScreen> createState() {
+    return _UserFormScreenState();
+  }
+}
+
+class _UserFormScreenState extends State<UserFormScreen> {
+  late final TextEditingController fullName;
+  late final TextEditingController username;
+  late final TextEditingController employeeNo;
+  late final TextEditingController department;
+  late final TextEditingController password;
+  late final TextEditingController confirmPassword;
+  late final TextEditingController reason;
+
+  String role = 'user';
+  bool active = true;
+  bool archived = false;
+  bool saving = false;
+
+  @override
+  void initState() {
+    super.initState();
+
+    fullName = TextEditingController(text: widget.user?.fullName ?? '');
+
+    username = TextEditingController(text: widget.user?.username ?? '');
+
+    employeeNo = TextEditingController(text: widget.user?.employeeNo ?? '');
+
+    department = TextEditingController(text: widget.user?.department ?? '');
+
+    password = TextEditingController();
+    confirmPassword = TextEditingController();
+
+    reason = TextEditingController(
+      text: widget.user == null ? 'إضافة مستخدم' : '',
+    );
+
+    role = widget.user?.role ?? 'user';
+
+    active = widget.user?.isActive ?? true;
+
+    archived = widget.user?.isArchived ?? false;
+  }
+
+  Future<void> save() async {
+    final AppLocalizations text = AppLocalizations.of(context);
+
+    if (fullName.text.trim().isEmpty ||
+        username.text.trim().isEmpty ||
+        reason.text.trim().isEmpty ||
+        (widget.user == null && password.text.isEmpty) ||
+        password.text != confirmPassword.text) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(text.enterRequired)));
+
+      return;
+    }
+
+    setState(() {
+      saving = true;
+    });
+
+    try {
+      await widget.controller.db.saveUser(
+        actor: widget.controller.currentUser!,
+        userId: widget.user?.id,
+        fullName: fullName.text.trim(),
+        username: username.text.trim(),
+        employeeNo: employeeNo.text.trim(),
+        department: department.text.trim(),
+        role: role,
+        isActive: active,
+        isArchived: archived,
+        password: password.text.isEmpty ? null : password.text,
+        reason: reason.text.trim(),
+      );
+
+      widget.controller.refresh();
+
+      if (mounted) {
+        Navigator.of(context).pop();
+      }
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              error.toString().contains('LAST_ADMIN')
+                  ? text.cannotDisableLastAdmin
+                  : error.toString(),
+            ),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          saving = false;
+        });
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    fullName.dispose();
+    username.dispose();
+    employeeNo.dispose();
+    department.dispose();
+    password.dispose();
+    confirmPassword.dispose();
+    reason.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final AppLocalizations text = AppLocalizations.of(context);
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(widget.user == null ? text.addUser : text.editUser),
+      ),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: <Widget>[
+          TextField(
+            controller: fullName,
+            decoration: InputDecoration(labelText: text.fullName),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: username,
+            decoration: InputDecoration(labelText: text.username),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: employeeNo,
+            decoration: InputDecoration(labelText: text.employeeNo),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: department,
+            decoration: InputDecoration(labelText: text.department),
+          ),
+          const SizedBox(height: 12),
+          DropdownButtonFormField<String>(
+            initialValue: role,
+            decoration: InputDecoration(labelText: text.role),
+            items: <DropdownMenuItem<String>>[
+              DropdownMenuItem<String>(
+                value: 'user',
+                child: Text(text.normalUser),
+              ),
+              DropdownMenuItem<String>(
+                value: 'super_admin',
+                child: Text(text.superAdmin),
+              ),
+            ],
+            onChanged: (String? value) {
+              if (value != null) {
+                setState(() {
+                  role = value;
+                });
+              }
+            },
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: password,
+            obscureText: true,
+            decoration: InputDecoration(labelText: text.changePassword),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: confirmPassword,
+            obscureText: true,
+            decoration: InputDecoration(
+              labelText:
+                  '${text.confirm} '
+                  '${text.password}',
+            ),
+          ),
+          SwitchListTile(
+            value: active,
+            title: Text(text.active),
+            onChanged: (bool value) {
+              setState(() {
+                active = value;
+              });
+            },
+          ),
+          SwitchListTile(
+            value: archived,
+            title: Text(text.archived),
+            onChanged: (bool value) {
+              setState(() {
+                archived = value;
+              });
+            },
+          ),
+          TextField(
+            controller: reason,
+            maxLines: 3,
+            decoration: InputDecoration(labelText: text.reason),
+          ),
+          const SizedBox(height: 16),
+          FilledButton.icon(
+            onPressed: saving ? null : save,
+            icon: const Icon(Icons.save),
+            label: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 14),
+              child: Text(text.save),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class AuditScreen extends StatelessWidget {
+  const AuditScreen({super.key, required this.controller});
+
+  final AppController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final AppLocalizations text = AppLocalizations.of(context);
+
+    return Scaffold(
+      appBar: AppBar(title: Text(text.auditTrail)),
+      body: FutureBuilder<List<Map<String, Object?>>>(
+        future: controller.db.auditLogs(),
+        builder: (
+          BuildContext context,
+          AsyncSnapshot<List<Map<String, Object?>>> snapshot,
+        ) {
+          if (!snapshot.hasData) {
+            return const Center(child: CircularProgressIndicator());
+          }
+
+          final List<Map<String, Object?>> rows = snapshot.data!;
+
+          if (rows.isEmpty) {
+            return const Center(child: Text('-'));
+          }
+
+          return ListView.separated(
+            padding: const EdgeInsets.all(12),
+            itemCount: rows.length,
+            separatorBuilder: (BuildContext context, int index) {
+              return const SizedBox(height: 8);
+            },
+            itemBuilder: (BuildContext context, int index) {
+              final Map<String, Object?> row = rows[index];
+
+              return Card(
+                child: ExpansionTile(
+                  title: Text(row['action']?.toString() ?? ''),
+                  subtitle: Text(
+                    '${row['performer_name'] ?? ''}\n'
+                    '${formatDate(parseDateValue(row['performed_at']), includeTime: true)}',
+                  ),
+                  childrenPadding: const EdgeInsets.all(14),
+                  children: <Widget>[
+                    SelectableText(
+                      '${text.oldValue}: '
+                      '${row['old_value'] ?? '-'}\n\n'
+                      '${text.newValue}: '
+                      '${row['new_value'] ?? '-'}\n\n'
+                      '${text.reason}: '
+                      '${row['reason'] ?? '-'}',
+                    ),
+                  ],
+                ),
+              );
+            },
+          );
+        },
+      ),
+    );
+  }
+}
