@@ -86,7 +86,8 @@ class _ProductInventoryScreenState extends State<ProductInventoryScreen> {
                     '${product.sku} • ${text.lots}: ${product.lotCount} • '
                     '${text.cartons}: ${product.cartonCount} • '
                     '${text.units}: ${product.unitCount}\n'
-                    '${text.afterOpenDays}: ${product.afterOpenDays}',
+                    '${text.stabilityPeriod}: '
+                    '${_stabilityText(product, text)}',
                   ),
                   isThreeLine: true,
                   trailing: Row(
@@ -146,11 +147,16 @@ class _ProductDialogState extends State<_ProductDialog> {
   late final TextEditingController type;
   late final TextEditingController gtin;
   late final TextEditingController catalog;
+  late final TextEditingController abbottListNo;
+  late final TextEditingController mohCode;
   late final TextEditingController manufacturer;
   late final TextEditingController department;
+  late final TextEditingController device;
   late final TextEditingController storage;
   late final TextEditingController measureUnit;
-  late final TextEditingController afterOpenDays;
+  late final TextEditingController stabilityValue;
+  late bool stabilityEnabled;
+  late String stabilityPeriod;
   bool busy = false;
 
   @override
@@ -162,12 +168,17 @@ class _ProductDialogState extends State<_ProductDialog> {
     type = TextEditingController(text: product?.type ?? '');
     gtin = TextEditingController(text: product?.gtin ?? '');
     catalog = TextEditingController(text: product?.catalogNumber ?? '');
+    abbottListNo = TextEditingController(text: product?.abbottListNo ?? '');
+    mohCode = TextEditingController(text: product?.mohCode ?? '');
     manufacturer = TextEditingController(text: product?.manufacturer ?? '');
     department = TextEditingController(text: product?.department ?? '');
+    device = TextEditingController(text: product?.deviceName ?? '');
     storage = TextEditingController(text: product?.storageLocation ?? '');
     measureUnit = TextEditingController(text: product?.defaultUnit ?? 'mL');
-    afterOpenDays = TextEditingController(
-      text: (product?.afterOpenDays ?? 0).toString(),
+    stabilityEnabled = product?.stabilityEnabled ?? false;
+    stabilityPeriod = product?.stabilityPeriod ?? 'day';
+    stabilityValue = TextEditingController(
+      text: (product?.stabilityValue ?? 0).toString(),
     );
   }
 
@@ -179,11 +190,14 @@ class _ProductDialogState extends State<_ProductDialog> {
       type,
       gtin,
       catalog,
+      abbottListNo,
+      mohCode,
       manufacturer,
       department,
+      device,
       storage,
       measureUnit,
-      afterOpenDays,
+      stabilityValue,
     ]) {
       controller.dispose();
     }
@@ -203,11 +217,21 @@ class _ProductDialogState extends State<_ProductDialog> {
           'type': type.text.trim(),
           'gtin': gtin.text.trim(),
           'catalog_number': catalog.text.trim(),
+          'abbott_list_no': abbottListNo.text.trim(),
+          'moh_code': mohCode.text.trim(),
           'manufacturer': manufacturer.text.trim(),
           'department': department.text.trim(),
+          'device_name': device.text.trim(),
           'storage_location': storage.text.trim(),
           'default_unit': measureUnit.text.trim(),
-          'after_open_days': int.parse(afterOpenDays.text),
+          'after_open_days':
+              stabilityEnabled && stabilityPeriod == 'day'
+                  ? int.parse(stabilityValue.text)
+                  : 0,
+          'stability_enabled': stabilityEnabled ? 1 : 0,
+          'stability_value':
+              stabilityEnabled ? int.parse(stabilityValue.text) : 0,
+          'stability_period': stabilityPeriod,
         },
       );
       if (mounted) Navigator.of(context).pop(true);
@@ -237,23 +261,65 @@ class _ProductDialogState extends State<_ProductDialog> {
                         _field(type, text.type),
                         _field(gtin, text.gtin),
                         _field(catalog, text.catalog),
+                        _field(abbottListNo, text.abbottListNo),
+                        _field(mohCode, text.mohCode),
                         _field(manufacturer, text.manufacturer),
                         _field(department, text.department),
+                        _field(device, text.device),
                         _field(storage, text.storage),
                         _field(measureUnit, text.measureUnit, required: true),
-                        TextFormField(
-                          controller: afterOpenDays,
-                          keyboardType: TextInputType.number,
-                          decoration: InputDecoration(
-                            labelText: text.afterOpenDays,
-                          ),
-                          validator: (String? value) {
-                            final int? days = int.tryParse(value ?? '');
-                            return days == null || days < 0
-                                ? text.invalidNumber
-                                : null;
-                          },
+                        SwitchListTile(
+                          contentPadding: EdgeInsets.zero,
+                          value: stabilityEnabled,
+                          title: Text(text.stabilityOption),
+                          onChanged:
+                              (bool value) =>
+                                  setState(() => stabilityEnabled = value),
                         ),
+                        if (stabilityEnabled) ...<Widget>[
+                          TextFormField(
+                            controller: stabilityValue,
+                            keyboardType: TextInputType.number,
+                            decoration: InputDecoration(
+                              labelText: text.stabilityDuration,
+                            ),
+                            validator: (String? value) {
+                              final int? duration = int.tryParse(value ?? '');
+                              return duration == null || duration <= 0
+                                  ? text.invalidNumber
+                                  : null;
+                            },
+                          ),
+                          DropdownButtonFormField<String>(
+                            initialValue: stabilityPeriod,
+                            decoration: InputDecoration(
+                              labelText: text.stabilityPeriod,
+                            ),
+                            items: <DropdownMenuItem<String>>[
+                              DropdownMenuItem(
+                                value: 'hour',
+                                child: Text(text.hour),
+                              ),
+                              DropdownMenuItem(
+                                value: 'day',
+                                child: Text(text.day),
+                              ),
+                              DropdownMenuItem(
+                                value: 'week',
+                                child: Text(text.week),
+                              ),
+                              DropdownMenuItem(
+                                value: 'month',
+                                child: Text(text.month),
+                              ),
+                            ],
+                            onChanged: (String? value) {
+                              if (value != null) {
+                                setState(() => stabilityPeriod = value);
+                              }
+                            },
+                          ),
+                        ],
                       ]
                       .expand(
                         (Widget child) => <Widget>[
@@ -378,10 +444,13 @@ class _ProductDetailsScreenState extends State<ProductDetailsScreen> {
                               MapEntry(text.sku, product.sku),
                               MapEntry(text.gtin, product.gtin),
                               MapEntry(text.catalog, product.catalogNumber),
+                              MapEntry(text.abbottListNo, product.abbottListNo),
+                              MapEntry(text.mohCode, product.mohCode),
                               MapEntry(text.manufacturer, product.manufacturer),
+                              MapEntry(text.device, product.deviceName),
                               MapEntry(
-                                text.afterOpenDays,
-                                product.afterOpenDays.toString(),
+                                text.stabilityPeriod,
+                                _stabilityText(product, text),
                               ),
                             ],
                           ),
@@ -689,18 +758,36 @@ class _CartonDialogState extends State<_CartonDialog> {
   final GlobalKey<FormState> formKey = GlobalKey<FormState>();
   final TextEditingController code = TextEditingController();
   final TextEditingController count = TextEditingController(text: '1');
-  final TextEditingController quantity = TextEditingController(text: '1');
-  late final TextEditingController measureUnit = TextEditingController(
-    text: widget.defaultUnit,
-  );
+  final TextEditingController otherMeasureUnit = TextEditingController();
+  late String measureUnit;
   bool busy = false;
+
+  @override
+  void initState() {
+    super.initState();
+    const List<String> choices = <String>[
+      'mL',
+      'Tests',
+      'Vials',
+      'Bottles',
+      'Cartridges',
+      'Packs',
+    ];
+    if (choices.contains(widget.defaultUnit)) {
+      measureUnit = widget.defaultUnit;
+    } else if (widget.defaultUnit.trim().isNotEmpty) {
+      measureUnit = '__other__';
+      otherMeasureUnit.text = widget.defaultUnit;
+    } else {
+      measureUnit = 'mL';
+    }
+  }
 
   @override
   void dispose() {
     code.dispose();
     count.dispose();
-    quantity.dispose();
-    measureUnit.dispose();
+    otherMeasureUnit.dispose();
     super.dispose();
   }
 
@@ -713,8 +800,11 @@ class _CartonDialogState extends State<_CartonDialog> {
         lotId: widget.lotId,
         cartonCode: code.text,
         unitCount: int.parse(count.text),
-        quantityPerUnit: double.parse(quantity.text),
-        measureUnit: measureUnit.text.trim(),
+        quantityPerUnit: 1,
+        measureUnit:
+            measureUnit == '__other__'
+                ? otherMeasureUnit.text.trim()
+                : measureUnit,
       );
       if (mounted) Navigator.of(context).pop(true);
     } catch (error) {
@@ -727,10 +817,6 @@ class _CartonDialogState extends State<_CartonDialog> {
   @override
   Widget build(BuildContext context) {
     final InventoryText text = InventoryText(context);
-    String? positiveNumber(String? value) {
-      final double? number = double.tryParse(value ?? '');
-      return number == null || number <= 0 ? text.invalidNumber : null;
-    }
 
     return AlertDialog(
       title: Text(text.addCarton),
@@ -750,7 +836,7 @@ class _CartonDialogState extends State<_CartonDialog> {
             TextFormField(
               controller: count,
               keyboardType: TextInputType.number,
-              decoration: InputDecoration(labelText: text.unitCount),
+              decoration: InputDecoration(labelText: text.unitsPerCarton),
               validator: (String? value) {
                 final int? number = int.tryParse(value ?? '');
                 return number == null || number < 1 || number > 1000
@@ -759,22 +845,42 @@ class _CartonDialogState extends State<_CartonDialog> {
               },
             ),
             const SizedBox(height: 10),
-            TextFormField(
-              controller: quantity,
-              keyboardType: const TextInputType.numberWithOptions(
-                decimal: true,
-              ),
-              decoration: InputDecoration(labelText: text.quantityPerUnit),
-              validator: positiveNumber,
-            ),
-            const SizedBox(height: 10),
-            TextFormField(
-              controller: measureUnit,
+            DropdownButtonFormField<String>(
+              initialValue: measureUnit,
               decoration: InputDecoration(labelText: text.measureUnit),
-              validator:
-                  (String? value) =>
-                      (value?.trim().isEmpty ?? true) ? text.required : null,
+              items:
+                  const <String>[
+                        'mL',
+                        'Tests',
+                        'Vials',
+                        'Bottles',
+                        'Cartridges',
+                        'Packs',
+                        '__other__',
+                      ]
+                      .map(
+                        (String value) => DropdownMenuItem<String>(
+                          value: value,
+                          child: Text(
+                            value == '__other__' ? text.other : value,
+                          ),
+                        ),
+                      )
+                      .toList(),
+              onChanged: (String? value) {
+                if (value != null) setState(() => measureUnit = value);
+              },
             ),
+            if (measureUnit == '__other__') ...<Widget>[
+              const SizedBox(height: 10),
+              TextFormField(
+                controller: otherMeasureUnit,
+                decoration: InputDecoration(labelText: text.other),
+                validator:
+                    (String? value) =>
+                        (value?.trim().isEmpty ?? true) ? text.required : null,
+              ),
+            ],
           ],
         ),
       ),
@@ -911,25 +1017,29 @@ class _CartonDetailsScreenState extends State<CartonDetailsScreen> {
                             ],
                           ),
                           const SizedBox(height: 10),
-                          Wrap(
-                            spacing: 8,
-                            runSpacing: 8,
-                            children: <Widget>[
-                              FilledButton.icon(
-                                onPressed:
-                                    printing ? null : () => printCarton(carton),
-                                icon: const Icon(Icons.print),
-                                label: Text(text.printCarton),
-                              ),
-                              OutlinedButton.icon(
-                                onPressed:
-                                    printing ? null : () => printUnits(units),
-                                icon: const Icon(Icons.print_outlined),
-                                label: Text(text.printUnits),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 16),
+                          if (widget.canManage) ...<Widget>[
+                            Wrap(
+                              spacing: 8,
+                              runSpacing: 8,
+                              children: <Widget>[
+                                FilledButton.icon(
+                                  onPressed:
+                                      printing
+                                          ? null
+                                          : () => printCarton(carton),
+                                  icon: const Icon(Icons.print),
+                                  label: Text(text.printCarton),
+                                ),
+                                OutlinedButton.icon(
+                                  onPressed:
+                                      printing ? null : () => printUnits(units),
+                                  icon: const Icon(Icons.print_outlined),
+                                  label: Text(text.printUnits),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 16),
+                          ],
                           Text(
                             text.units,
                             style: Theme.of(context).textTheme.titleLarge,
@@ -1026,7 +1136,37 @@ class _UnitDetailsScreenState extends State<UnitDetailsScreen> {
 
   Future<void> useUnit() async {
     final InventoryText text = InventoryText(context);
+    final UnitRecord? current = await widget.repository.unitById(widget.unitId);
+    if (!mounted || current == null) return;
+    if (current.isExpired) {
+      await _showWarningDialog(
+        context,
+        title: text.expired,
+        message: text.expiredUnitWarning,
+      );
+      return;
+    }
+    if (!widget.canManage) {
+      final UnitRecord? blocker = await widget.repository.blockingPreviousUnit(
+        widget.unitId,
+      );
+      if (!mounted) return;
+      if (blocker != null) {
+        await _showWarningDialog(
+          context,
+          title: text.previousUnitWarning,
+          message:
+              '${text.previousUnitWarning}\n\n'
+              '${text.unit}: ${blocker.unitCode}\n'
+              '${text.remaining}: ${blocker.remainingQuantity} '
+              '${blocker.measureUnit}\n'
+              '${text.openedAt}: ${_dateTime(blocker.openedAt)}',
+        );
+        return;
+      }
+    }
     final TextEditingController quantity = TextEditingController();
+    quantity.text = current.remainingQuantity.toString();
     final TextEditingController note = TextEditingController();
     final bool? confirmed = await showDialog<bool>(
       context: context,
@@ -1067,13 +1207,21 @@ class _UnitDetailsScreenState extends State<UnitDetailsScreen> {
       note.dispose();
       return;
     }
+    final double? amount = double.tryParse(quantity.text.trim());
+    if (amount == null || amount <= 0) {
+      quantity.dispose();
+      note.dispose();
+      if (mounted) _showError(context, ArgumentError('INVALID_QUANTITY'));
+      return;
+    }
     setState(() => busy = true);
     try {
       await widget.repository.recordUsage(
         actorId: widget.actorId,
         unitId: widget.unitId,
-        quantity: double.parse(quantity.text),
+        quantity: amount,
         note: note.text,
+        enforceSequence: !widget.canManage,
       );
       if (mounted) setState(() => revision++);
     } catch (error) {
@@ -1138,14 +1286,14 @@ class _UnitDetailsScreenState extends State<UnitDetailsScreen> {
                             text.remaining,
                             '${unit.remainingQuantity} ${unit.measureUnit}',
                           ),
-                          MapEntry(text.openedAt, _date(unit.openedAt)),
+                          MapEntry(text.openedAt, _dateTime(unit.openedAt)),
                           MapEntry(
                             text.afterOpenExpiry,
-                            _date(unit.afterOpenExpiry),
+                            _dateTime(unit.afterOpenExpiry),
                           ),
                           MapEntry(
                             text.effectiveExpiry,
-                            _date(unit.effectiveExpiry),
+                            _dateTime(unit.effectiveExpiry),
                           ),
                         ],
                       ),
@@ -1165,11 +1313,12 @@ class _UnitDetailsScreenState extends State<UnitDetailsScreen> {
                         ),
                       ],
                       const SizedBox(height: 8),
-                      OutlinedButton.icon(
-                        onPressed: busy ? null : () => printUnit(unit),
-                        icon: const Icon(Icons.print),
-                        label: Text(text.printUnit),
-                      ),
+                      if (widget.canManage)
+                        OutlinedButton.icon(
+                          onPressed: busy ? null : () => printUnit(unit),
+                          icon: const Icon(Icons.print),
+                          label: Text(text.printUnit),
+                        ),
                     ],
                   ),
         );
@@ -1245,10 +1394,62 @@ String _date(DateTime? value) {
       '${value.day.toString().padLeft(2, '0')}';
 }
 
-void _showError(BuildContext context, Object error) {
-  ScaffoldMessenger.of(context).showSnackBar(
-    SnackBar(content: Text(error.toString()), backgroundColor: Colors.red),
+String _dateTime(DateTime? value) {
+  if (value == null) return '-';
+  return '${_date(value)} '
+      '${value.hour.toString().padLeft(2, '0')}:'
+      '${value.minute.toString().padLeft(2, '0')}';
+}
+
+String _stabilityText(ProductRecord product, InventoryText text) {
+  if (!product.stabilityEnabled || product.stabilityValue <= 0) {
+    return text.disabled;
+  }
+  final String period = switch (product.stabilityPeriod) {
+    'hour' => text.hour,
+    'week' => text.week,
+    'month' => text.month,
+    _ => text.day,
+  };
+  return '${product.stabilityValue} $period';
+}
+
+Future<void> _showWarningDialog(
+  BuildContext context, {
+  required String title,
+  required String message,
+}) {
+  return showDialog<void>(
+    context: context,
+    builder:
+        (BuildContext context) => AlertDialog(
+          icon: const Icon(Icons.warning_amber_rounded, color: Colors.red),
+          title: Text(title),
+          content: Text(message),
+          actions: <Widget>[
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('OK'),
+            ),
+          ],
+        ),
   );
+}
+
+void _showError(BuildContext context, Object error) {
+  final InventoryText text = InventoryText(context);
+  final String value = error.toString();
+  final String message =
+      error is SequentialUnitException
+          ? '${text.previousUnitWarning}: ${error.blockingUnit.unitCode}'
+          : value.contains('UNIT_EXPIRED')
+          ? text.expiredUnitWarning
+          : value.contains('INVALID_QUANTITY')
+          ? text.invalidNumber
+          : value;
+  ScaffoldMessenger.of(
+    context,
+  ).showSnackBar(SnackBar(content: Text(message), backgroundColor: Colors.red));
 }
 
 void _showSuccess(BuildContext context, String message) {

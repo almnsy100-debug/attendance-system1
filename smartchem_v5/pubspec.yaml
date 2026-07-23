@@ -1,7 +1,7 @@
 name: production
 description: SmartChem Track laboratory inventory system
 publish_to: none
-version: 5.0.0+11
+version: 5.1.0+12
 
 environment:
   sdk: ">=3.7.0 <4.0.0"

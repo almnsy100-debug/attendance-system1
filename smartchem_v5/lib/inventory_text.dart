@@ -35,6 +35,54 @@ class InventoryText {
   String get measureUnit => value('وحدة القياس', 'Measure unit');
   String get afterOpenDays =>
       value('مدة الثبات بعد الفتح (أيام)', 'Stability after opening (days)');
+  String get stabilityOption =>
+      value('تفعيل مدة وفترة الثبات', 'Enable stability period');
+  String get stabilityDuration => value('مدة الثبات', 'Stability duration');
+  String get stabilityPeriod => value('فترة الثبات', 'Stability period');
+  String get hour => value('ساعة', 'Hour');
+  String get day => value('يوم', 'Day');
+  String get week => value('أسبوع', 'Week');
+  String get month => value('شهر', 'Month');
+  String get intakeTitle =>
+      value('تسجيل الكرتون من الباركود', 'Register carton from barcode');
+  String get automaticData =>
+      value('بيانات مستخرجة تلقائيًا', 'Automatically captured data');
+  String get requiredData =>
+      value('بيانات يجب تسجيلها', 'Required registration data');
+  String get internalNumber => value('الرقم الداخلي', 'Internal number');
+  String get rawBarcode =>
+      value('القيمة الأصلية للباركود', 'Original barcode value');
+  String get receivedAt => value('تاريخ الاستلام', 'Receipt date');
+  String get manufacturerExpiry =>
+      value('تاريخ انتهاء الشركة', 'Manufacturer expiry');
+  String get materialName => value('اسم المادة', 'Material name');
+  String get abbottListNo => 'Abbott List No';
+  String get mohCode => 'MOH Code';
+  String get device => value('الجهاز', 'Device');
+  String get other => value('أخرى', 'Other');
+  String get unitsPerCarton =>
+      value('عدد العلب في الكرتون الواحد', 'Units in one carton');
+  String get importCatalog =>
+      value('استيراد قائمة المواد من Excel', 'Import material list from Excel');
+  String get catalogEmpty => value(
+    'قائمة المواد فارغة. استورد ملف Excel الذي يحتوي على اسم المادة وAbbott List No وMOH Code.',
+    'The material list is empty. Import an Excel file containing material name, Abbott List No and MOH Code.',
+  );
+  String get importedRows =>
+      value('تم استيراد عدد المواد', 'Imported material rows');
+  String get previousUnitWarning => value(
+    'لا يمكن استخدام هذه العلبة قبل إنهاء العلبة السابقة',
+    'This unit cannot be used before the previous unit is finished',
+  );
+  String get expiredUnitWarning => value(
+    'انتهت صلاحية العلبة بعد الفتح ولا يمكن استخدامها.',
+    'The unit has expired after opening and cannot be used.',
+  );
+  String get automaticallyOpened => value(
+    'يسجل تاريخ الفتح تلقائيًا عند أول استخدام.',
+    'The opening time is recorded automatically on first use.',
+  );
+  String get disabled => value('غير مفعلة', 'Disabled');
   String get expiry => value('تاريخ الانتهاء', 'Expiry date');
   String get received => value('تاريخ الاستلام', 'Received date');
   String get cartonCode => value('رمز الكرتون', 'Carton code');

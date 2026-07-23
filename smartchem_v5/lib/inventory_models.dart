@@ -1,5 +1,12 @@
 import 'dart:math';
 
+const List<String> inventoryStabilityPeriods = <String>[
+  'hour',
+  'day',
+  'week',
+  'month',
+];
+
 DateTime? inventoryDate(Object? value) {
   final String text = value?.toString().trim() ?? '';
   return text.isEmpty ? null : DateTime.tryParse(text);
@@ -12,6 +19,78 @@ double inventoryNumber(Object? value) {
   return double.tryParse(value?.toString() ?? '') ?? 0;
 }
 
+DateTime calculateStabilityExpiry(DateTime openedAt, int value, String period) {
+  if (value <= 0) return openedAt;
+  switch (period) {
+    case 'hour':
+      return openedAt.add(Duration(hours: value));
+    case 'week':
+      return openedAt.add(Duration(days: value * 7));
+    case 'month':
+      final int targetMonth = openedAt.month - 1 + value;
+      final int year = openedAt.year + targetMonth ~/ 12;
+      final int month = targetMonth % 12 + 1;
+      final int lastDay = DateTime(year, month + 1, 0).day;
+      return DateTime(
+        year,
+        month,
+        min(openedAt.day, lastDay),
+        openedAt.hour,
+        openedAt.minute,
+        openedAt.second,
+        openedAt.millisecond,
+        openedAt.microsecond,
+      );
+    case 'day':
+    default:
+      return openedAt.add(Duration(days: value));
+  }
+}
+
+class ProductCatalogRecord {
+  const ProductCatalogRecord({
+    required this.id,
+    required this.name,
+    required this.abbottListNo,
+    required this.mohCode,
+  });
+
+  factory ProductCatalogRecord.fromMap(Map<String, Object?> map) {
+    return ProductCatalogRecord(
+      id: map['id'] as int,
+      name: map['name']?.toString() ?? '',
+      abbottListNo: map['abbott_list_no']?.toString() ?? '',
+      mohCode: map['moh_code']?.toString() ?? '',
+    );
+  }
+
+  final int id;
+  final String name;
+  final String abbottListNo;
+  final String mohCode;
+}
+
+class InventoryIntakeResult {
+  const InventoryIntakeResult({
+    required this.productId,
+    required this.lotId,
+    required this.cartonId,
+  });
+
+  final int productId;
+  final int lotId;
+  final int cartonId;
+}
+
+class SequentialUnitException implements Exception {
+  const SequentialUnitException(this.blockingUnit);
+
+  final UnitRecord blockingUnit;
+
+  @override
+  String toString() => 'PREVIOUS_UNIT_NOT_EMPTY:${blockingUnit.unitCode}';
+}
+
 class ProductRecord {
   const ProductRecord({
     required this.id,
@@ -20,10 +99,16 @@ class ProductRecord {
     required this.type,
     required this.gtin,
     required this.catalogNumber,
+    required this.abbottListNo,
+    required this.mohCode,
     required this.manufacturer,
     required this.department,
+    required this.deviceName,
     required this.storageLocation,
     required this.defaultUnit,
+    required this.stabilityEnabled,
+    required this.stabilityValue,
+    required this.stabilityPeriod,
     required this.afterOpenDays,
     required this.lotCount,
     required this.cartonCount,
@@ -40,10 +125,17 @@ class ProductRecord {
       type: map['type']?.toString() ?? '',
       gtin: map['gtin']?.toString() ?? '',
       catalogNumber: map['catalog_number']?.toString() ?? '',
+      abbottListNo: map['abbott_list_no']?.toString() ?? '',
+      mohCode: map['moh_code']?.toString() ?? '',
       manufacturer: map['manufacturer']?.toString() ?? '',
       department: map['department']?.toString() ?? '',
+      deviceName: map['device_name']?.toString() ?? '',
       storageLocation: map['storage_location']?.toString() ?? '',
       defaultUnit: map['default_unit']?.toString() ?? '',
+      stabilityEnabled: (map['stability_enabled'] as int? ?? 0) == 1,
+      stabilityValue:
+          map['stability_value'] as int? ?? map['after_open_days'] as int? ?? 0,
+      stabilityPeriod: map['stability_period']?.toString() ?? 'day',
       afterOpenDays: map['after_open_days'] as int? ?? 0,
       lotCount: map['lot_count'] as int? ?? 0,
       cartonCount: map['carton_count'] as int? ?? 0,
@@ -59,10 +151,16 @@ class ProductRecord {
   final String type;
   final String gtin;
   final String catalogNumber;
+  final String abbottListNo;
+  final String mohCode;
   final String manufacturer;
   final String department;
+  final String deviceName;
   final String storageLocation;
   final String defaultUnit;
+  final bool stabilityEnabled;
+  final int stabilityValue;
+  final String stabilityPeriod;
   final int afterOpenDays;
   final int lotCount;
   final int cartonCount;
@@ -129,6 +227,8 @@ class CartonRecord {
     required this.lotNumber,
     required this.manufacturerExpiry,
     required this.cartonCode,
+    required this.sourceBarcode,
+    required this.barcodeFormat,
     required this.sequenceNumber,
     required this.expectedUnitCount,
     required this.actualUnitCount,
@@ -147,6 +247,8 @@ class CartonRecord {
       lotNumber: map['lot_number']?.toString() ?? '',
       manufacturerExpiry: inventoryDate(map['manufacturer_expiry']),
       cartonCode: map['carton_code']?.toString() ?? '',
+      sourceBarcode: map['source_barcode']?.toString() ?? '',
+      barcodeFormat: map['barcode_format']?.toString() ?? '',
       sequenceNumber: map['sequence_number'] as int? ?? 0,
       expectedUnitCount: map['expected_unit_count'] as int? ?? 0,
       actualUnitCount: map['actual_unit_count'] as int? ?? 0,
@@ -164,6 +266,8 @@ class CartonRecord {
   final String lotNumber;
   final DateTime? manufacturerExpiry;
   final String cartonCode;
+  final String sourceBarcode;
+  final String barcodeFormat;
   final int sequenceNumber;
   final int expectedUnitCount;
   final int actualUnitCount;
@@ -183,6 +287,7 @@ class UnitRecord {
     required this.lotNumber,
     required this.cartonCode,
     required this.unitCode,
+    required this.sequenceNumber,
     required this.sourceBarcode,
     required this.serialNumber,
     required this.originalQuantity,
@@ -193,6 +298,9 @@ class UnitRecord {
     required this.manufacturerExpiry,
     required this.status,
     required this.afterOpenDays,
+    required this.stabilityEnabled,
+    required this.stabilityValue,
+    required this.stabilityPeriod,
     required this.legacyMaterialId,
     required this.createdAt,
     required this.lastPrintedAt,
@@ -208,6 +316,7 @@ class UnitRecord {
       lotNumber: map['lot_number']?.toString() ?? '',
       cartonCode: map['carton_code']?.toString() ?? '',
       unitCode: map['unit_code']?.toString() ?? '',
+      sequenceNumber: map['sequence_number'] as int? ?? 1,
       sourceBarcode: map['source_barcode']?.toString() ?? '',
       serialNumber: map['serial_number']?.toString() ?? '',
       originalQuantity: inventoryNumber(map['original_quantity']),
@@ -218,6 +327,10 @@ class UnitRecord {
       manufacturerExpiry: inventoryDate(map['manufacturer_expiry']),
       status: map['status']?.toString() ?? 'sealed',
       afterOpenDays: map['after_open_days'] as int? ?? 0,
+      stabilityEnabled: (map['stability_enabled'] as int? ?? 0) == 1,
+      stabilityValue:
+          map['stability_value'] as int? ?? map['after_open_days'] as int? ?? 0,
+      stabilityPeriod: map['stability_period']?.toString() ?? 'day',
       legacyMaterialId: map['legacy_material_id'] as int?,
       createdAt: inventoryDate(map['created_at']),
       lastPrintedAt: inventoryDate(map['last_printed_at']),
@@ -232,6 +345,7 @@ class UnitRecord {
   final String lotNumber;
   final String cartonCode;
   final String unitCode;
+  final int sequenceNumber;
   final String sourceBarcode;
   final String serialNumber;
   final double originalQuantity;
@@ -242,6 +356,9 @@ class UnitRecord {
   final DateTime? manufacturerExpiry;
   final String status;
   final int afterOpenDays;
+  final bool stabilityEnabled;
+  final int stabilityValue;
+  final String stabilityPeriod;
   final int? legacyMaterialId;
   final DateTime? createdAt;
   final DateTime? lastPrintedAt;
@@ -259,6 +376,9 @@ class UnitRecord {
   bool get isExpired {
     final DateTime? expiry = effectiveExpiry;
     if (expiry == null) return false;
+    if (afterOpenExpiry != null && expiry == afterOpenExpiry) {
+      return !expiry.isAfter(DateTime.now());
+    }
     final DateTime now = DateTime.now();
     final DateTime today = DateTime(now.year, now.month, now.day);
     return expiry.isBefore(today);

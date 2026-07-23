@@ -22,6 +22,7 @@ import 'package:share_plus/share_plus.dart';
 import 'package:sqflite/sqflite.dart';
 
 import 'l10n/app_localizations.dart';
+import 'inventory_intake_screen.dart';
 import 'inventory_models.dart';
 import 'inventory_repository.dart';
 import 'inventory_screens.dart';
@@ -1887,6 +1888,35 @@ class HomeScreen extends StatelessWidget {
       }
     }
 
+    final CartonRecord? hierarchyCarton = await controller.inventory.findCarton(
+      scan.rawValue,
+    );
+    if (hierarchyCarton != null) {
+      final ProductRecord? product = await controller.inventory.productById(
+        hierarchyCarton.productId,
+      );
+      final LotRecord? lot = await controller.inventory.lotById(
+        hierarchyCarton.lotId,
+      );
+      if (product != null && lot != null && context.mounted) {
+        await Navigator.of(context).push(
+          MaterialPageRoute<void>(
+            builder:
+                (_) => CartonDetailsScreen(
+                  repository: controller.inventory,
+                  actorId: actor.id,
+                  canManage: actor.isSuperAdmin,
+                  product: product,
+                  lot: lot,
+                  cartonId: hierarchyCarton.id,
+                ),
+          ),
+        );
+        controller.refresh();
+        return;
+      }
+    }
+
     final ParsedGs1 parsed = parseGs1(scan.rawValue);
 
     final MaterialRecord? existing = await controller.db.findMaterial(
@@ -1922,30 +1952,46 @@ class HomeScreen extends StatelessWidget {
       return;
     }
 
-    final int? newId = await Navigator.of(context).push<int>(
-      MaterialPageRoute<int>(
+    final InventoryIntakeResult? intake = await Navigator.of(
+      context,
+    ).push<InventoryIntakeResult>(
+      MaterialPageRoute<InventoryIntakeResult>(
         builder: (BuildContext context) {
-          return MaterialFormScreen(
-            controller: controller,
+          return InventoryIntakeScreen(
+            repository: controller.inventory,
+            actorId: actor.id,
             rawBarcode: scan.rawValue,
             barcodeFormat: scan.format,
-            parsed: parsed,
+            gtin: parsed.gtin,
+            lotNumber: parsed.lot,
+            serialNumber: parsed.serial,
+            catalogNumber: parsed.catalog,
+            manufacturerExpiry: parsed.expiryDate,
           );
         },
       ),
     );
 
-    if (newId != null && context.mounted) {
-      await Navigator.of(context).push(
-        MaterialPageRoute<void>(
-          builder: (BuildContext context) {
-            return MaterialDetailsScreen(
-              controller: controller,
-              materialId: newId,
-            );
-          },
-        ),
+    if (intake != null && context.mounted) {
+      final ProductRecord? product = await controller.inventory.productById(
+        intake.productId,
       );
+      final LotRecord? lot = await controller.inventory.lotById(intake.lotId);
+      if (product != null && lot != null && context.mounted) {
+        await Navigator.of(context).push(
+          MaterialPageRoute<void>(
+            builder:
+                (_) => CartonDetailsScreen(
+                  repository: controller.inventory,
+                  actorId: actor.id,
+                  canManage: true,
+                  product: product,
+                  lot: lot,
+                  cartonId: intake.cartonId,
+                ),
+          ),
+        );
+      }
     }
 
     controller.refresh();
@@ -3428,11 +3474,6 @@ class _MaterialFormScreenState extends State<MaterialFormScreen> {
             keyboardType: const TextInputType.numberWithOptions(decimal: true),
           ),
           field(unit, text.unit),
-          field(
-            minStock,
-            text.minStock,
-            keyboardType: const TextInputType.numberWithOptions(decimal: true),
-          ),
           field(receiptDate, '${text.receiptDate} YYYY-MM-DD'),
           field(expiryDate, '${text.expiryDate} YYYY-MM-DD'),
           field(openedDate, '${text.openDate} YYYY-MM-DD'),

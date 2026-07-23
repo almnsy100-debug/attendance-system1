@@ -67,6 +67,8 @@ class InventoryLabelService {
                 pw.SizedBox(height: 4),
                 _line('المنتج / Product', product.name, font),
                 _line('SKU', product.sku, font),
+                _line('Abbott List No', product.abbottListNo, font),
+                _line('MOH Code', product.mohCode, font),
                 _line('LOT', lot.lotNumber, font),
                 _line('EXP', _date(lot.manufacturerExpiry), font),
                 _line('العلب / Units', carton.actualUnitCount.toString(), font),
@@ -124,14 +126,14 @@ class InventoryLabelService {
                   _line('EXP', _date(unit.manufacturerExpiry), font),
                   _line(
                     'الفتح / Open',
-                    unit.openedAt == null ? '-' : _date(unit.openedAt),
+                    unit.openedAt == null ? '-' : _dateTime(unit.openedAt),
                     font,
                   ),
                   _line(
                     'بعد الفتح / BUD',
                     unit.afterOpenExpiry == null
-                        ? '${unit.afterOpenDays} days'
-                        : _date(unit.afterOpenExpiry),
+                        ? _stability(unit)
+                        : _dateTime(unit.afterOpenExpiry),
                     font,
                   ),
                   pw.Spacer(),
@@ -157,5 +159,17 @@ class InventoryLabelService {
     return '${value.year.toString().padLeft(4, '0')}-'
         '${value.month.toString().padLeft(2, '0')}-'
         '${value.day.toString().padLeft(2, '0')}';
+  }
+
+  static String _dateTime(DateTime? value) {
+    if (value == null) return '-';
+    return '${_date(value)} '
+        '${value.hour.toString().padLeft(2, '0')}:'
+        '${value.minute.toString().padLeft(2, '0')}';
+  }
+
+  static String _stability(UnitRecord unit) {
+    if (!unit.stabilityEnabled || unit.stabilityValue <= 0) return '-';
+    return '${unit.stabilityValue} ${unit.stabilityPeriod}';
   }
 }
