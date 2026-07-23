@@ -376,62 +376,65 @@ void main() {
     },
   );
 
-  test('ordinary usage cannot skip a non-empty previous unit', () async {
-    await InventoryRepository.upgrade(
-      database,
-      2,
-      InventoryRepository.schemaVersion,
-    );
-    final InventoryRepository repository = InventoryRepository(database);
-    final int productId = await repository.saveProduct(
-      actorId: 1,
-      values: <String, Object?>{
-        'sku': 'P-ORDER',
-        'name': 'Ordered product',
-        'default_unit': 'Tests',
-        'after_open_days': 0,
-      },
-    );
-    final int lotId = await repository.addLot(
-      actorId: 1,
-      productId: productId,
-      lotNumber: 'ORDER-LOT',
-    );
-    final int cartonId = await repository.addCartonWithUnits(
-      actorId: 1,
-      lotId: lotId,
-      cartonCode: 'ORDER-CARTON',
-      unitCount: 2,
-      quantityPerUnit: 1,
-      measureUnit: 'Tests',
-    );
-    final List<UnitRecord> units = await repository.units(cartonId);
+  test(
+    'all users including main cannot skip a non-empty previous unit',
+    () async {
+      await InventoryRepository.upgrade(
+        database,
+        2,
+        InventoryRepository.schemaVersion,
+      );
+      final InventoryRepository repository = InventoryRepository(database);
+      final int productId = await repository.saveProduct(
+        actorId: 1,
+        values: <String, Object?>{
+          'sku': 'P-ORDER',
+          'name': 'Ordered product',
+          'default_unit': 'Tests',
+          'after_open_days': 0,
+        },
+      );
+      final int lotId = await repository.addLot(
+        actorId: 1,
+        productId: productId,
+        lotNumber: 'ORDER-LOT',
+      );
+      final int cartonId = await repository.addCartonWithUnits(
+        actorId: 1,
+        lotId: lotId,
+        cartonCode: 'ORDER-CARTON',
+        unitCount: 2,
+        quantityPerUnit: 1,
+        measureUnit: 'Tests',
+      );
+      final List<UnitRecord> units = await repository.units(cartonId);
 
-    await expectLater(
-      repository.recordUsage(
+      await expectLater(
+        repository.recordUsage(
+          actorId: 1,
+          unitId: units[1].id,
+          quantity: 1,
+          note: 'attempt to skip',
+        ),
+        throwsA(isA<SequentialUnitException>()),
+      );
+
+      await repository.recordUsage(
+        actorId: 1,
+        unitId: units[0].id,
+        quantity: 1,
+        note: 'finish first',
+      );
+      expect((await repository.unitById(units[0].id))?.openedAt, isNotNull);
+      await repository.recordUsage(
         actorId: 1,
         unitId: units[1].id,
         quantity: 1,
-        note: 'attempt to skip',
-      ),
-      throwsA(isA<SequentialUnitException>()),
-    );
-
-    await repository.recordUsage(
-      actorId: 1,
-      unitId: units[0].id,
-      quantity: 1,
-      note: 'finish first',
-    );
-    expect((await repository.unitById(units[0].id))?.openedAt, isNotNull);
-    await repository.recordUsage(
-      actorId: 1,
-      unitId: units[1].id,
-      quantity: 1,
-      note: 'use second',
-    );
-    expect((await repository.unitById(units[1].id))?.isEmpty, isTrue);
-  });
+        note: 'use second',
+      );
+      expect((await repository.unitById(units[1].id))?.isEmpty, isTrue);
+    },
+  );
 
   test('opening a unit applies hour stability exactly', () async {
     await InventoryRepository.upgrade(
@@ -530,6 +533,110 @@ void main() {
       ),
     );
   });
+
+  test(
+    'admin edits and deletes require a reason and preserve audit data',
+    () async {
+      await InventoryRepository.upgrade(
+        database,
+        2,
+        InventoryRepository.schemaVersion,
+      );
+      final InventoryRepository repository = InventoryRepository(database);
+      final int productId = await repository.saveProduct(
+        actorId: 1,
+        values: <String, Object?>{
+          'sku': 'P-AUDIT',
+          'name': 'Audited product',
+          'default_unit': 'mL',
+          'after_open_days': 0,
+        },
+      );
+      await expectLater(
+        repository.saveProduct(
+          actorId: 1,
+          productId: productId,
+          values: <String, Object?>{'name': 'Changed without reason'},
+        ),
+        throwsA(isA<ArgumentError>()),
+      );
+      await repository.saveProduct(
+        actorId: 1,
+        productId: productId,
+        reason: 'Corrected the registered product name',
+        values: <String, Object?>{'name': 'Audited product updated'},
+      );
+      final List<Map<String, Object?>> productHistory = await repository
+          .auditHistory('product', productId);
+      final Map<String, Object?> productEdit = productHistory.firstWhere(
+        (Map<String, Object?> row) => row['action'] == 'EDIT_PRODUCT',
+      );
+      expect(productEdit['performer_name'], 'Admin');
+      expect(productEdit['reason'], 'Corrected the registered product name');
+      expect(productEdit['old_value'], isNotNull);
+      expect(productEdit['new_value'], isNotNull);
+
+      final int lotId = await repository.addLot(
+        actorId: 1,
+        productId: productId,
+        lotNumber: 'AUDIT-LOT',
+      );
+      final int cartonId = await repository.addCartonWithUnits(
+        actorId: 1,
+        lotId: lotId,
+        cartonCode: 'AUDIT-CARTON',
+        unitCount: 2,
+        quantityPerUnit: 5,
+        measureUnit: 'mL',
+      );
+      final List<UnitRecord> units = await repository.units(cartonId);
+      await repository.recordUsage(
+        actorId: 1,
+        unitId: units.first.id,
+        quantity: 2,
+        note: 'Started unit',
+      );
+      await expectLater(
+        repository.updateUnit(
+          actorId: 1,
+          unitId: units.first.id,
+          originalQuantity: 1,
+          measureUnit: 'mL',
+          reason: 'Invalid reduction',
+        ),
+        throwsA(isA<ArgumentError>()),
+      );
+      await repository.updateUnit(
+        actorId: 1,
+        unitId: units.first.id,
+        originalQuantity: 6,
+        measureUnit: 'mL',
+        reason: 'Corrected package quantity',
+      );
+      await repository.archiveEntity(
+        actorId: 1,
+        entityType: 'unit',
+        entityId: units[1].id,
+        reason: 'Damaged package removed from service',
+      );
+      expect(await repository.units(cartonId), hasLength(1));
+      final Map<String, Object?> archivedUnit =
+          (await database.query(
+            'units',
+            where: 'id = ?',
+            whereArgs: <Object?>[units[1].id],
+          )).single;
+      expect(archivedUnit['status'], 'archived');
+      final List<Map<String, Object?>> unitHistory = await repository
+          .auditHistory('unit', units[1].id);
+      expect(unitHistory.first['action'], 'DELETE_UNIT');
+      expect(unitHistory.first['performer_name'], 'Admin');
+      expect(
+        unitHistory.first['reason'],
+        'Damaged package removed from service',
+      );
+    },
+  );
 }
 
 Future<void> _createLegacySchema(Database db) async {

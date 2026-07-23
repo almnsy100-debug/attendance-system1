@@ -544,6 +544,7 @@ class InventoryRepository {
     required String entityType,
     required int entityId,
     required String action,
+    Object? oldValue,
     Object? value,
     String? reason,
   }) async {
@@ -551,6 +552,7 @@ class InventoryRepository {
       'entity_type': entityType,
       'entity_id': entityId,
       'action': action,
+      'old_value': oldValue == null ? null : jsonEncode(oldValue),
       'new_value': value == null ? null : jsonEncode(value),
       'reason': reason,
       'performed_by': actorId,
@@ -882,13 +884,16 @@ class InventoryRepository {
   Future<List<ProductRecord>> products({bool includeArchived = false}) async {
     final List<Map<String, Object?>> rows = await database.rawQuery('''
       SELECT p.*,
-        (SELECT COUNT(*) FROM lots l WHERE l.product_id = p.id) AS lot_count,
+        (SELECT COUNT(*) FROM lots l WHERE l.product_id = p.id
+          AND l.status <> 'archived') AS lot_count,
         (SELECT COUNT(*) FROM cartons c JOIN lots l ON l.id = c.lot_id
-          WHERE l.product_id = p.id) AS carton_count,
+          WHERE l.product_id = p.id
+          AND l.status <> 'archived' AND c.status <> 'archived') AS carton_count,
         (SELECT COUNT(*) FROM units u
           JOIN cartons c ON c.id = u.carton_id
           JOIN lots l ON l.id = c.lot_id
-          WHERE l.product_id = p.id) AS unit_count
+          WHERE l.product_id = p.id AND l.status <> 'archived'
+          AND c.status <> 'archived' AND u.status <> 'archived') AS unit_count
       FROM products p
       ${includeArchived ? '' : 'WHERE p.is_archived = 0'}
       ORDER BY p.name COLLATE NOCASE
@@ -908,7 +913,23 @@ class InventoryRepository {
     required int actorId,
     required Map<String, Object?> values,
     int? productId,
+    String reason = '',
   }) async {
+    final String normalizedReason = reason.trim();
+    if (productId != null && normalizedReason.isEmpty) {
+      throw ArgumentError('EDIT_REASON_REQUIRED');
+    }
+    Map<String, Object?>? previous;
+    if (productId != null) {
+      final List<Map<String, Object?>> rows = await database.query(
+        'products',
+        where: 'id = ?',
+        whereArgs: <Object?>[productId],
+        limit: 1,
+      );
+      if (rows.isEmpty) throw StateError('PRODUCT_NOT_FOUND');
+      previous = rows.first;
+    }
     final Map<String, Object?> saved = <String, Object?>{
       ...values,
       'updated_by': actorId,
@@ -941,7 +962,9 @@ class InventoryRepository {
       entityType: 'product',
       entityId: id,
       action: productId == null ? 'ADD_PRODUCT' : 'EDIT_PRODUCT',
+      oldValue: previous,
       value: values,
+      reason: productId == null ? null : normalizedReason,
     );
     return id;
   }
@@ -950,12 +973,14 @@ class InventoryRepository {
     final List<Map<String, Object?>> rows = await database.rawQuery(
       '''
       SELECT l.*, p.name AS product_name,
-        (SELECT COUNT(*) FROM cartons c WHERE c.lot_id = l.id) AS carton_count,
+        (SELECT COUNT(*) FROM cartons c WHERE c.lot_id = l.id
+          AND c.status <> 'archived') AS carton_count,
         (SELECT COUNT(*) FROM units u JOIN cartons c ON c.id = u.carton_id
-          WHERE c.lot_id = l.id) AS unit_count
+          WHERE c.lot_id = l.id AND c.status <> 'archived'
+          AND u.status <> 'archived') AS unit_count
       FROM lots l
       JOIN products p ON p.id = l.product_id
-      WHERE l.product_id = ?
+      WHERE l.product_id = ? AND l.status <> 'archived'
       ORDER BY l.created_at DESC
     ''',
       <Object?>[productId],
@@ -967,9 +992,11 @@ class InventoryRepository {
     final List<Map<String, Object?>> rows = await database.rawQuery(
       '''
       SELECT l.*, p.name AS product_name,
-        (SELECT COUNT(*) FROM cartons c WHERE c.lot_id = l.id) AS carton_count,
+        (SELECT COUNT(*) FROM cartons c WHERE c.lot_id = l.id
+          AND c.status <> 'archived') AS carton_count,
         (SELECT COUNT(*) FROM units u JOIN cartons c ON c.id = u.carton_id
-          WHERE c.lot_id = l.id) AS unit_count
+          WHERE c.lot_id = l.id AND c.status <> 'archived'
+          AND u.status <> 'archived') AS unit_count
       FROM lots l JOIN products p ON p.id = l.product_id
       WHERE l.id = ? LIMIT 1
     ''',
@@ -1005,18 +1032,64 @@ class InventoryRepository {
     return id;
   }
 
+  Future<void> updateLot({
+    required int actorId,
+    required int lotId,
+    required String lotNumber,
+    DateTime? manufacturerExpiry,
+    DateTime? receivedAt,
+    required String reason,
+  }) async {
+    final String normalizedReason = reason.trim();
+    if (normalizedReason.isEmpty) {
+      throw ArgumentError('EDIT_REASON_REQUIRED');
+    }
+    final List<Map<String, Object?>> rows = await database.query(
+      'lots',
+      where: 'id = ?',
+      whereArgs: <Object?>[lotId],
+      limit: 1,
+    );
+    if (rows.isEmpty) throw StateError('LOT_NOT_FOUND');
+    final Map<String, Object?> values = <String, Object?>{
+      'lot_number': lotNumber.trim(),
+      'manufacturer_expiry': manufacturerExpiry?.toIso8601String(),
+      'received_at': receivedAt?.toIso8601String(),
+      'updated_by': actorId,
+      'updated_at': _now(),
+      'sync_status': 'local',
+    };
+    await database.update(
+      'lots',
+      values,
+      where: 'id = ?',
+      whereArgs: <Object?>[lotId],
+    );
+    await _audit(
+      actorId: actorId,
+      entityType: 'lot',
+      entityId: lotId,
+      action: 'EDIT_LOT',
+      oldValue: rows.first,
+      value: values,
+      reason: normalizedReason,
+    );
+  }
+
   Future<List<CartonRecord>> cartons(int lotId) async {
     final List<Map<String, Object?>> rows = await database.rawQuery(
       '''
       SELECT c.*, l.product_id, l.lot_number, l.manufacturer_expiry,
         p.name AS product_name,
-        (SELECT COUNT(*) FROM units u WHERE u.carton_id = c.id) AS actual_unit_count,
         (SELECT COUNT(*) FROM units u WHERE u.carton_id = c.id
+          AND u.status <> 'archived') AS actual_unit_count,
+        (SELECT COUNT(*) FROM units u WHERE u.carton_id = c.id
+          AND u.status <> 'archived'
           AND u.opened_at IS NOT NULL) AS open_unit_count
       FROM cartons c
       JOIN lots l ON l.id = c.lot_id
       JOIN products p ON p.id = l.product_id
-      WHERE c.lot_id = ?
+      WHERE c.lot_id = ? AND c.status <> 'archived'
       ORDER BY c.sequence_number, c.created_at
     ''',
       <Object?>[lotId],
@@ -1029,8 +1102,10 @@ class InventoryRepository {
       '''
       SELECT c.*, l.product_id, l.lot_number, l.manufacturer_expiry,
         p.name AS product_name,
-        (SELECT COUNT(*) FROM units u WHERE u.carton_id = c.id) AS actual_unit_count,
         (SELECT COUNT(*) FROM units u WHERE u.carton_id = c.id
+          AND u.status <> 'archived') AS actual_unit_count,
+        (SELECT COUNT(*) FROM units u WHERE u.carton_id = c.id
+          AND u.status <> 'archived'
           AND u.opened_at IS NOT NULL) AS open_unit_count
       FROM cartons c
       JOIN lots l ON l.id = c.lot_id
@@ -1048,13 +1123,16 @@ class InventoryRepository {
       '''
       SELECT c.*, l.product_id, l.lot_number, l.manufacturer_expiry,
         p.name AS product_name,
-        (SELECT COUNT(*) FROM units u WHERE u.carton_id = c.id) AS actual_unit_count,
         (SELECT COUNT(*) FROM units u WHERE u.carton_id = c.id
+          AND u.status <> 'archived') AS actual_unit_count,
+        (SELECT COUNT(*) FROM units u WHERE u.carton_id = c.id
+          AND u.status <> 'archived'
           AND u.opened_at IS NOT NULL) AS open_unit_count
       FROM cartons c
       JOIN lots l ON l.id = c.lot_id
       JOIN products p ON p.id = l.product_id
-      WHERE c.carton_code = ? OR c.source_barcode = ?
+      WHERE c.status <> 'archived'
+        AND (c.carton_code = ? OR c.source_barcode = ?)
       ORDER BY c.id DESC LIMIT 1
     ''',
       <Object?>[value, value],
@@ -1133,6 +1211,88 @@ class InventoryRepository {
     });
   }
 
+  Future<void> updateCarton({
+    required int actorId,
+    required int cartonId,
+    required String cartonCode,
+    required String sourceBarcode,
+    required String barcodeFormat,
+    required String reason,
+  }) async {
+    final String normalizedReason = reason.trim();
+    final String normalizedCode = cartonCode.trim();
+    if (normalizedReason.isEmpty) {
+      throw ArgumentError('EDIT_REASON_REQUIRED');
+    }
+    if (normalizedCode.isEmpty) {
+      throw ArgumentError('CARTON_CODE_REQUIRED');
+    }
+    await database.transaction((Transaction transaction) async {
+      final List<Map<String, Object?>> rows = await transaction.query(
+        'cartons',
+        where: 'id = ?',
+        whereArgs: <Object?>[cartonId],
+        limit: 1,
+      );
+      if (rows.isEmpty) throw StateError('CARTON_NOT_FOUND');
+      final Map<String, Object?> previous = rows.first;
+      final Map<String, Object?> values = <String, Object?>{
+        'carton_code': normalizedCode,
+        'source_barcode': sourceBarcode.trim(),
+        'barcode_format': barcodeFormat.trim(),
+        'updated_by': actorId,
+        'updated_at': _now(),
+        'sync_status': 'local',
+      };
+      await transaction.update(
+        'cartons',
+        values,
+        where: 'id = ?',
+        whereArgs: <Object?>[cartonId],
+      );
+      if (previous['carton_code']?.toString() != normalizedCode) {
+        final List<Map<String, Object?>> unitRows = await transaction.query(
+          'units',
+          columns: <String>['id', 'sequence_number'],
+          where: 'carton_id = ?',
+          whereArgs: <Object?>[cartonId],
+          orderBy: 'sequence_number, id',
+        );
+        for (int index = 0; index < unitRows.length; index++) {
+          final int sequence =
+              unitRows[index]['sequence_number'] as int? ?? index + 1;
+          final String unitCode =
+              '$normalizedCode-${sequence.toString().padLeft(3, '0')}';
+          await transaction.update(
+            'units',
+            <String, Object?>{
+              'unit_code': unitCode,
+              'source_barcode': unitCode,
+              'serial_number': unitCode,
+              'updated_by': actorId,
+              'updated_at': _now(),
+              'sync_status': 'local',
+            },
+            where: 'id = ?',
+            whereArgs: <Object?>[unitRows[index]['id']],
+          );
+        }
+      }
+      await transaction.insert('audit_logs', <String, Object?>{
+        'entity_type': 'carton',
+        'entity_id': cartonId,
+        'action': 'EDIT_CARTON',
+        'old_value': jsonEncode(previous),
+        'new_value': jsonEncode(values),
+        'reason': normalizedReason,
+        'performed_by': actorId,
+        'performed_at': _now(),
+        'device_name': 'SmartChem Track v5',
+        'sync_status': 'local',
+      });
+    });
+  }
+
   Future<List<UnitRecord>> units(int cartonId) async {
     final List<Map<String, Object?>> rows = await database.rawQuery(
       '''
@@ -1149,7 +1309,7 @@ class InventoryRepository {
       JOIN cartons c ON c.id = u.carton_id
       JOIN lots l ON l.id = c.lot_id
       JOIN products p ON p.id = l.product_id
-      WHERE u.carton_id = ?
+      WHERE u.carton_id = ? AND u.status <> 'archived'
       ORDER BY u.sequence_number, u.id
     ''',
       <Object?>[cartonId],
@@ -1225,6 +1385,189 @@ class InventoryRepository {
       <Object?>[value, value, value],
     );
     return rows.isEmpty ? null : UnitRecord.fromMap(rows.first);
+  }
+
+  Future<void> updateUnit({
+    required int actorId,
+    required int unitId,
+    required double originalQuantity,
+    required String measureUnit,
+    required String reason,
+  }) async {
+    final String normalizedReason = reason.trim();
+    if (normalizedReason.isEmpty) {
+      throw ArgumentError('EDIT_REASON_REQUIRED');
+    }
+    if (originalQuantity <= 0 || measureUnit.trim().isEmpty) {
+      throw ArgumentError('INVALID_UNIT_QUANTITY');
+    }
+    final List<Map<String, Object?>> rows = await database.query(
+      'units',
+      where: 'id = ?',
+      whereArgs: <Object?>[unitId],
+      limit: 1,
+    );
+    if (rows.isEmpty) throw StateError('UNIT_NOT_FOUND');
+    final Map<String, Object?> previous = rows.first;
+    if (originalQuantity < inventoryNumber(previous['used_quantity'])) {
+      throw ArgumentError('QUANTITY_BELOW_USED');
+    }
+    final Map<String, Object?> values = <String, Object?>{
+      'original_quantity': originalQuantity,
+      'measure_unit': measureUnit.trim(),
+      'updated_by': actorId,
+      'updated_at': _now(),
+      'sync_status': 'local',
+    };
+    await database.update(
+      'units',
+      values,
+      where: 'id = ?',
+      whereArgs: <Object?>[unitId],
+    );
+    await _audit(
+      actorId: actorId,
+      entityType: 'unit',
+      entityId: unitId,
+      action: 'EDIT_UNIT',
+      oldValue: previous,
+      value: values,
+      reason: normalizedReason,
+    );
+  }
+
+  Future<void> archiveEntity({
+    required int actorId,
+    required String entityType,
+    required int entityId,
+    required String reason,
+  }) async {
+    final String normalizedReason = reason.trim();
+    if (normalizedReason.isEmpty) {
+      throw ArgumentError('EDIT_REASON_REQUIRED');
+    }
+    const Set<String> supported = <String>{'product', 'lot', 'carton', 'unit'};
+    if (!supported.contains(entityType)) {
+      throw ArgumentError('UNSUPPORTED_ENTITY');
+    }
+    await database.transaction((Transaction transaction) async {
+      final String table =
+          entityType == 'product'
+              ? 'products'
+              : entityType == 'lot'
+              ? 'lots'
+              : entityType == 'carton'
+              ? 'cartons'
+              : 'units';
+      final List<Map<String, Object?>> rows = await transaction.query(
+        table,
+        where: 'id = ?',
+        whereArgs: <Object?>[entityId],
+        limit: 1,
+      );
+      if (rows.isEmpty) throw StateError('ENTITY_NOT_FOUND');
+      final String now = _now();
+      final Map<String, Object?> common = <String, Object?>{
+        'updated_by': actorId,
+        'updated_at': now,
+        'sync_status': 'local',
+      };
+      if (entityType == 'product') {
+        await transaction.update(
+          'products',
+          <String, Object?>{...common, 'is_archived': 1},
+          where: 'id = ?',
+          whereArgs: <Object?>[entityId],
+        );
+        await transaction.update(
+          'lots',
+          <String, Object?>{...common, 'status': 'archived'},
+          where: 'product_id = ?',
+          whereArgs: <Object?>[entityId],
+        );
+        await transaction.rawUpdate(
+          "UPDATE cartons SET status = 'archived', updated_by = ?, "
+          'updated_at = ?, sync_status = ? WHERE lot_id IN '
+          '(SELECT id FROM lots WHERE product_id = ?)',
+          <Object?>[actorId, now, 'local', entityId],
+        );
+        await transaction.rawUpdate(
+          "UPDATE units SET status = 'archived', updated_by = ?, "
+          'updated_at = ?, sync_status = ? WHERE carton_id IN '
+          '(SELECT c.id FROM cartons c JOIN lots l ON l.id = c.lot_id '
+          'WHERE l.product_id = ?)',
+          <Object?>[actorId, now, 'local', entityId],
+        );
+      } else if (entityType == 'lot') {
+        await transaction.update(
+          'lots',
+          <String, Object?>{...common, 'status': 'archived'},
+          where: 'id = ?',
+          whereArgs: <Object?>[entityId],
+        );
+        await transaction.update(
+          'cartons',
+          <String, Object?>{...common, 'status': 'archived'},
+          where: 'lot_id = ?',
+          whereArgs: <Object?>[entityId],
+        );
+        await transaction.rawUpdate(
+          "UPDATE units SET status = 'archived', updated_by = ?, "
+          'updated_at = ?, sync_status = ? WHERE carton_id IN '
+          '(SELECT id FROM cartons WHERE lot_id = ?)',
+          <Object?>[actorId, now, 'local', entityId],
+        );
+      } else if (entityType == 'carton') {
+        await transaction.update(
+          'cartons',
+          <String, Object?>{...common, 'status': 'archived'},
+          where: 'id = ?',
+          whereArgs: <Object?>[entityId],
+        );
+        await transaction.update(
+          'units',
+          <String, Object?>{...common, 'status': 'archived'},
+          where: 'carton_id = ?',
+          whereArgs: <Object?>[entityId],
+        );
+      } else {
+        await transaction.update(
+          'units',
+          <String, Object?>{...common, 'status': 'archived'},
+          where: 'id = ?',
+          whereArgs: <Object?>[entityId],
+        );
+      }
+      await transaction.insert('audit_logs', <String, Object?>{
+        'entity_type': entityType,
+        'entity_id': entityId,
+        'action': 'DELETE_${entityType.toUpperCase()}',
+        'old_value': jsonEncode(rows.first),
+        'new_value': jsonEncode(<String, Object?>{'status': 'archived'}),
+        'reason': normalizedReason,
+        'performed_by': actorId,
+        'performed_at': now,
+        'device_name': 'SmartChem Track v5',
+        'sync_status': 'local',
+      });
+    });
+  }
+
+  Future<List<Map<String, Object?>>> auditHistory(
+    String entityType,
+    int entityId,
+  ) {
+    return database.rawQuery(
+      '''
+      SELECT a.*, u.full_name AS performer_name
+      FROM audit_logs a
+      JOIN users u ON u.id = a.performed_by
+      WHERE a.entity_type = ? AND a.entity_id = ?
+      ORDER BY a.performed_at DESC
+      LIMIT 100
+      ''',
+      <Object?>[entityType, entityId],
+    );
   }
 
   Future<UnitRecord?> blockingPreviousUnit(int unitId) async {
@@ -1327,7 +1670,6 @@ class InventoryRepository {
     required int unitId,
     required double quantity,
     required String note,
-    bool enforceSequence = true,
   }) async {
     if (quantity <= 0) throw ArgumentError('INVALID_QUANTITY');
     await database.transaction((Transaction transaction) async {
@@ -1351,9 +1693,8 @@ class InventoryRepository {
       );
       if (rows.isEmpty) throw StateError('UNIT_NOT_FOUND');
       final Map<String, Object?> row = rows.first;
-      if (enforceSequence) {
-        final List<Map<String, Object?>> blockers = await transaction.rawQuery(
-          '''
+      final List<Map<String, Object?>> blockers = await transaction.rawQuery(
+        '''
           SELECT previous.*, c.lot_id, c.carton_code,
             c.source_barcode AS carton_source_barcode, c.barcode_format,
             l.product_id, l.lot_number, l.manufacturer_expiry, l.received_at,
@@ -1373,13 +1714,12 @@ class InventoryRepository {
             AND previous.used_quantity < previous.original_quantity
           ORDER BY previous.sequence_number ASC
         ''',
-          <Object?>[unitId],
-        );
-        for (final Map<String, Object?> blocker in blockers) {
-          final UnitRecord unit = UnitRecord.fromMap(blocker);
-          if (!unit.isExpired) {
-            throw SequentialUnitException(unit);
-          }
+        <Object?>[unitId],
+      );
+      for (final Map<String, Object?> blocker in blockers) {
+        final UnitRecord unit = UnitRecord.fromMap(blocker);
+        if (!unit.isExpired) {
+          throw SequentialUnitException(unit);
         }
       }
       final double original = inventoryNumber(row['original_quantity']);

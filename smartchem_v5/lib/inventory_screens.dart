@@ -215,6 +215,22 @@ class _ProductInventoryScreenState extends State<ProductInventoryScreen> {
     if (saved == true) refresh();
   }
 
+  Future<void> deleteProduct(ProductRecord product) async {
+    final String? reason = await _askRequiredReason(context, deleting: true);
+    if (reason == null || !mounted) return;
+    try {
+      await widget.repository.archiveEntity(
+        actorId: widget.actorId,
+        entityType: 'product',
+        entityId: product.id,
+        reason: reason,
+      );
+      if (mounted) refresh();
+    } catch (error) {
+      if (mounted) _showError(context, error);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final InventoryText text = InventoryText(context);
@@ -269,7 +285,14 @@ class _ProductInventoryScreenState extends State<ProductInventoryScreen> {
                       if (widget.canManage)
                         IconButton(
                           onPressed: () => editProduct(product),
+                          tooltip: text.edit,
                           icon: const Icon(Icons.edit_outlined),
+                        ),
+                      if (widget.canManage)
+                        IconButton(
+                          onPressed: () => deleteProduct(product),
+                          tooltip: text.delete,
+                          icon: const Icon(Icons.delete_outline),
                         ),
                       const Icon(Icons.chevron_right),
                     ],
@@ -328,6 +351,7 @@ class _ProductDialogState extends State<_ProductDialog> {
   late final TextEditingController storage;
   late final TextEditingController measureUnit;
   late final TextEditingController stabilityValue;
+  late final TextEditingController reason;
   late bool stabilityEnabled;
   late String stabilityPeriod;
   bool busy = false;
@@ -353,6 +377,7 @@ class _ProductDialogState extends State<_ProductDialog> {
     stabilityValue = TextEditingController(
       text: (product?.stabilityValue ?? 0).toString(),
     );
+    reason = TextEditingController();
   }
 
   @override
@@ -371,6 +396,7 @@ class _ProductDialogState extends State<_ProductDialog> {
       storage,
       measureUnit,
       stabilityValue,
+      reason,
     ]) {
       controller.dispose();
     }
@@ -384,6 +410,7 @@ class _ProductDialogState extends State<_ProductDialog> {
       await widget.repository.saveProduct(
         actorId: widget.actorId,
         productId: widget.product?.id,
+        reason: reason.text,
         values: <String, Object?>{
           'sku': sku.text.trim(),
           'name': name.text.trim(),
@@ -491,6 +518,8 @@ class _ProductDialogState extends State<_ProductDialog> {
                         },
                       ),
                     ],
+                    if (widget.product != null)
+                      _field(reason, text.editReason, required: true),
                   ]
                   .expand(
                     (Widget child) => <Widget>[
@@ -582,6 +611,36 @@ class _ProductDetailsScreenState extends State<ProductDetailsScreen> {
     if (saved == true) setState(() => revision++);
   }
 
+  Future<void> editLot(LotRecord lot) async {
+    final bool? saved = await showDialog<bool>(
+      context: context,
+      builder:
+          (_) => _LotDialog(
+            repository: widget.repository,
+            actorId: widget.actorId,
+            productId: widget.productId,
+            existing: lot,
+          ),
+    );
+    if (saved == true && mounted) setState(() => revision++);
+  }
+
+  Future<void> deleteLot(LotRecord lot) async {
+    final String? reason = await _askRequiredReason(context, deleting: true);
+    if (reason == null || !mounted) return;
+    try {
+      await widget.repository.archiveEntity(
+        actorId: widget.actorId,
+        entityType: 'lot',
+        entityId: lot.id,
+        reason: reason,
+      );
+      if (mounted) setState(() => revision++);
+    } catch (error) {
+      if (mounted) _showError(context, error);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final InventoryText text = InventoryText(context);
@@ -633,6 +692,12 @@ class _ProductDetailsScreenState extends State<ProductDetailsScreen> {
                               ),
                             ],
                           ),
+                          if (widget.canManage)
+                            _AuditHistoryCard(
+                              repository: widget.repository,
+                              entityType: 'product',
+                              entityId: product.id,
+                            ),
                           const SizedBox(height: 16),
                           Text(
                             text.lots,
@@ -659,7 +724,29 @@ class _ProductDetailsScreenState extends State<ProductDetailsScreen> {
                                   '${text.units}: ${lot.unitCount}',
                                 ),
                                 isThreeLine: true,
-                                trailing: const Icon(Icons.chevron_right),
+                                trailing:
+                                    widget.canManage
+                                        ? PopupMenuButton<String>(
+                                          onSelected: (String action) {
+                                            if (action == 'edit') {
+                                              editLot(lot);
+                                            } else {
+                                              deleteLot(lot);
+                                            }
+                                          },
+                                          itemBuilder:
+                                              (_) => <PopupMenuEntry<String>>[
+                                                PopupMenuItem<String>(
+                                                  value: 'edit',
+                                                  child: Text(text.edit),
+                                                ),
+                                                PopupMenuItem<String>(
+                                                  value: 'delete',
+                                                  child: Text(text.delete),
+                                                ),
+                                              ],
+                                        )
+                                        : const Icon(Icons.chevron_right),
                                 onTap: () async {
                                   await Navigator.of(context).push(
                                     MaterialPageRoute<void>(
@@ -692,11 +779,13 @@ class _LotDialog extends StatefulWidget {
     required this.repository,
     required this.actorId,
     required this.productId,
+    this.existing,
   });
 
   final InventoryRepository repository;
   final int actorId;
   final int productId;
+  final LotRecord? existing;
 
   @override
   State<_LotDialog> createState() => _LotDialogState();
@@ -704,16 +793,36 @@ class _LotDialog extends StatefulWidget {
 
 class _LotDialogState extends State<_LotDialog> {
   final GlobalKey<FormState> formKey = GlobalKey<FormState>();
-  final TextEditingController lot = TextEditingController();
-  final TextEditingController expiry = TextEditingController();
-  final TextEditingController received = TextEditingController();
+  late final TextEditingController lot;
+  late final TextEditingController expiry;
+  late final TextEditingController received;
+  final TextEditingController reason = TextEditingController();
   bool busy = false;
+
+  @override
+  void initState() {
+    super.initState();
+    lot = TextEditingController(text: widget.existing?.lotNumber ?? '');
+    expiry = TextEditingController(
+      text:
+          widget.existing?.manufacturerExpiry == null
+              ? ''
+              : _date(widget.existing?.manufacturerExpiry),
+    );
+    received = TextEditingController(
+      text:
+          widget.existing?.receivedAt == null
+              ? ''
+              : _date(widget.existing?.receivedAt),
+    );
+  }
 
   @override
   void dispose() {
     lot.dispose();
     expiry.dispose();
     received.dispose();
+    reason.dispose();
     super.dispose();
   }
 
@@ -721,13 +830,24 @@ class _LotDialogState extends State<_LotDialog> {
     if (!(formKey.currentState?.validate() ?? false)) return;
     setState(() => busy = true);
     try {
-      await widget.repository.addLot(
-        actorId: widget.actorId,
-        productId: widget.productId,
-        lotNumber: lot.text,
-        manufacturerExpiry: DateTime.tryParse(expiry.text.trim()),
-        receivedAt: DateTime.tryParse(received.text.trim()),
-      );
+      if (widget.existing == null) {
+        await widget.repository.addLot(
+          actorId: widget.actorId,
+          productId: widget.productId,
+          lotNumber: lot.text,
+          manufacturerExpiry: DateTime.tryParse(expiry.text.trim()),
+          receivedAt: DateTime.tryParse(received.text.trim()),
+        );
+      } else {
+        await widget.repository.updateLot(
+          actorId: widget.actorId,
+          lotId: widget.existing!.id,
+          lotNumber: lot.text,
+          manufacturerExpiry: DateTime.tryParse(expiry.text.trim()),
+          receivedAt: DateTime.tryParse(received.text.trim()),
+          reason: reason.text,
+        );
+      }
       if (mounted) Navigator.of(context).pop(true);
     } catch (error) {
       if (mounted) _showError(context, error);
@@ -740,7 +860,7 @@ class _LotDialogState extends State<_LotDialog> {
   Widget build(BuildContext context) {
     final InventoryText text = InventoryText(context);
     return AlertDialog(
-      title: Text(text.addLot),
+      title: Text(widget.existing == null ? text.addLot : text.edit),
       content: Form(
         key: formKey,
         child: Column(
@@ -767,6 +887,16 @@ class _LotDialogState extends State<_LotDialog> {
                 labelText: '${text.received} YYYY-MM-DD',
               ),
             ),
+            if (widget.existing != null) ...<Widget>[
+              const SizedBox(height: 10),
+              TextFormField(
+                controller: reason,
+                decoration: InputDecoration(labelText: text.editReason),
+                validator:
+                    (String? value) =>
+                        (value?.trim().isEmpty ?? true) ? text.required : null,
+              ),
+            ],
           ],
         ),
       ),
@@ -818,6 +948,35 @@ class _LotDetailsScreenState extends State<LotDetailsScreen> {
     if (saved == true) setState(() => revision++);
   }
 
+  Future<void> editCarton(CartonRecord carton) async {
+    final bool? saved = await showDialog<bool>(
+      context: context,
+      builder:
+          (_) => _EditCartonDialog(
+            repository: widget.repository,
+            actorId: widget.actorId,
+            carton: carton,
+          ),
+    );
+    if (saved == true && mounted) setState(() => revision++);
+  }
+
+  Future<void> deleteCarton(CartonRecord carton) async {
+    final String? reason = await _askRequiredReason(context, deleting: true);
+    if (reason == null || !mounted) return;
+    try {
+      await widget.repository.archiveEntity(
+        actorId: widget.actorId,
+        entityType: 'carton',
+        entityId: carton.id,
+        reason: reason,
+      );
+      if (mounted) setState(() => revision++);
+    } catch (error) {
+      if (mounted) _showError(context, error);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final InventoryText text = InventoryText(context);
@@ -866,6 +1025,12 @@ class _LotDetailsScreenState extends State<LotDetailsScreen> {
                               MapEntry(text.received, _date(lot.receivedAt)),
                             ],
                           ),
+                          if (widget.canManage)
+                            _AuditHistoryCard(
+                              repository: widget.repository,
+                              entityType: 'lot',
+                              entityId: lot.id,
+                            ),
                           const SizedBox(height: 16),
                           Text(
                             text.cartons,
@@ -887,7 +1052,29 @@ class _LotDetailsScreenState extends State<LotDetailsScreen> {
                                   '${text.units}: ${carton.actualUnitCount} • '
                                   '${text.opened}: ${carton.openUnitCount}',
                                 ),
-                                trailing: const Icon(Icons.chevron_right),
+                                trailing:
+                                    widget.canManage
+                                        ? PopupMenuButton<String>(
+                                          onSelected: (String action) {
+                                            if (action == 'edit') {
+                                              editCarton(carton);
+                                            } else {
+                                              deleteCarton(carton);
+                                            }
+                                          },
+                                          itemBuilder:
+                                              (_) => <PopupMenuEntry<String>>[
+                                                PopupMenuItem<String>(
+                                                  value: 'edit',
+                                                  child: Text(text.edit),
+                                                ),
+                                                PopupMenuItem<String>(
+                                                  value: 'delete',
+                                                  child: Text(text.delete),
+                                                ),
+                                              ],
+                                        )
+                                        : const Icon(Icons.chevron_right),
                                 onTap: () async {
                                   await Navigator.of(context).push(
                                     MaterialPageRoute<void>(
@@ -1090,6 +1277,117 @@ class _CartonDialogState extends State<_CartonDialog> {
   }
 }
 
+class _EditCartonDialog extends StatefulWidget {
+  const _EditCartonDialog({
+    required this.repository,
+    required this.actorId,
+    required this.carton,
+  });
+
+  final InventoryRepository repository;
+  final int actorId;
+  final CartonRecord carton;
+
+  @override
+  State<_EditCartonDialog> createState() => _EditCartonDialogState();
+}
+
+class _EditCartonDialogState extends State<_EditCartonDialog> {
+  final GlobalKey<FormState> formKey = GlobalKey<FormState>();
+  late final TextEditingController code;
+  late final TextEditingController sourceBarcode;
+  late final TextEditingController barcodeFormat;
+  final TextEditingController reason = TextEditingController();
+  bool busy = false;
+
+  @override
+  void initState() {
+    super.initState();
+    code = TextEditingController(text: widget.carton.cartonCode);
+    sourceBarcode = TextEditingController(text: widget.carton.sourceBarcode);
+    barcodeFormat = TextEditingController(text: widget.carton.barcodeFormat);
+  }
+
+  @override
+  void dispose() {
+    code.dispose();
+    sourceBarcode.dispose();
+    barcodeFormat.dispose();
+    reason.dispose();
+    super.dispose();
+  }
+
+  Future<void> save() async {
+    if (!(formKey.currentState?.validate() ?? false)) return;
+    setState(() => busy = true);
+    try {
+      await widget.repository.updateCarton(
+        actorId: widget.actorId,
+        cartonId: widget.carton.id,
+        cartonCode: code.text,
+        sourceBarcode: sourceBarcode.text,
+        barcodeFormat: barcodeFormat.text,
+        reason: reason.text,
+      );
+      if (mounted) Navigator.of(context).pop(true);
+    } catch (error) {
+      if (mounted) _showError(context, error);
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final InventoryText text = InventoryText(context);
+    return AlertDialog(
+      title: Text('${text.edit}: ${text.carton}'),
+      content: Form(
+        key: formKey,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              TextFormField(
+                controller: code,
+                decoration: InputDecoration(labelText: text.cartonCode),
+                validator:
+                    (String? value) =>
+                        (value?.trim().isEmpty ?? true) ? text.required : null,
+              ),
+              const SizedBox(height: 10),
+              TextFormField(
+                controller: sourceBarcode,
+                decoration: InputDecoration(labelText: text.rawBarcode),
+              ),
+              const SizedBox(height: 10),
+              TextFormField(
+                controller: barcodeFormat,
+                decoration: const InputDecoration(labelText: 'Barcode format'),
+              ),
+              const SizedBox(height: 10),
+              TextFormField(
+                controller: reason,
+                decoration: InputDecoration(labelText: text.editReason),
+                validator:
+                    (String? value) =>
+                        (value?.trim().isEmpty ?? true) ? text.required : null,
+              ),
+            ],
+          ),
+        ),
+      ),
+      actions: <Widget>[
+        TextButton(
+          onPressed: busy ? null : () => Navigator.of(context).pop(false),
+          child: Text(text.cancel),
+        ),
+        FilledButton(onPressed: busy ? null : save, child: Text(text.save)),
+      ],
+    );
+  }
+}
+
 class CartonDetailsScreen extends StatefulWidget {
   const CartonDetailsScreen({
     super.key,
@@ -1127,6 +1425,9 @@ class _CartonDetailsScreenState extends State<CartonDetailsScreen> {
       );
       final bool printed = await Printing.layoutPdf(
         name: 'SmartChem-Carton-${carton.cartonCode}',
+        format: InventoryLabelService.cartonLabelFormat,
+        dynamicLayout: false,
+        forceCustomPrintPaper: true,
         onLayout: (_) async => bytes,
       );
       if (printed) {
@@ -1161,6 +1462,24 @@ class _CartonDetailsScreenState extends State<CartonDetailsScreen> {
     }
   }
 
+  Future<void> printA4(List<UnitRecord> units) async {
+    if (units.isEmpty) return;
+    setState(() => printing = true);
+    try {
+      final Uint8List bytes = await InventoryExportService.pdfBytes(units);
+      await Printing.layoutPdf(
+        name: 'SmartChem-A4-${units.first.cartonCode}',
+        format: InventoryExportService.a4Format,
+        dynamicLayout: false,
+        onLayout: (_) async => bytes,
+      );
+    } catch (error) {
+      if (mounted) _showError(context, error);
+    } finally {
+      if (mounted) setState(() => printing = false);
+    }
+  }
+
   Future<void> downloadExcel(List<UnitRecord> units) async {
     if (units.isEmpty) return;
     setState(() => printing = true);
@@ -1186,6 +1505,9 @@ class _CartonDetailsScreenState extends State<CartonDetailsScreen> {
       );
       final bool printed = await Printing.layoutPdf(
         name: 'SmartChem-Units-${units.first.cartonCode}',
+        format: InventoryLabelService.unitLabelFormat,
+        dynamicLayout: false,
+        forceCustomPrintPaper: true,
         onLayout: (_) async => bytes,
       );
       if (printed) {
@@ -1206,6 +1528,35 @@ class _CartonDetailsScreenState extends State<CartonDetailsScreen> {
     }
   }
 
+  Future<void> editCarton(CartonRecord carton) async {
+    final bool? saved = await showDialog<bool>(
+      context: context,
+      builder:
+          (_) => _EditCartonDialog(
+            repository: widget.repository,
+            actorId: widget.actorId,
+            carton: carton,
+          ),
+    );
+    if (saved == true && mounted) setState(() => revision++);
+  }
+
+  Future<void> deleteCarton(CartonRecord carton) async {
+    final String? reason = await _askRequiredReason(context, deleting: true);
+    if (reason == null || !mounted) return;
+    try {
+      await widget.repository.archiveEntity(
+        actorId: widget.actorId,
+        entityType: 'carton',
+        entityId: carton.id,
+        reason: reason,
+      );
+      if (mounted) Navigator.of(context).pop();
+    } catch (error) {
+      if (mounted) _showError(context, error);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final InventoryText text = InventoryText(context);
@@ -1215,7 +1566,24 @@ class _CartonDetailsScreenState extends State<CartonDetailsScreen> {
       builder: (BuildContext context, AsyncSnapshot<CartonRecord?> snapshot) {
         final CartonRecord? carton = snapshot.data;
         return Scaffold(
-          appBar: AppBar(title: Text(carton?.cartonCode ?? text.carton)),
+          appBar: AppBar(
+            title: Text(carton?.cartonCode ?? text.carton),
+            actions:
+                widget.canManage && carton != null
+                    ? <Widget>[
+                      IconButton(
+                        onPressed: () => editCarton(carton),
+                        tooltip: text.edit,
+                        icon: const Icon(Icons.edit_outlined),
+                      ),
+                      IconButton(
+                        onPressed: () => deleteCarton(carton),
+                        tooltip: text.delete,
+                        icon: const Icon(Icons.delete_outline),
+                      ),
+                    ]
+                    : null,
+          ),
           body:
               carton == null
                   ? const Center(child: CircularProgressIndicator())
@@ -1284,6 +1652,12 @@ class _CartonDetailsScreenState extends State<CartonDetailsScreen> {
                               ),
                             ],
                           ),
+                          if (widget.canManage)
+                            _AuditHistoryCard(
+                              repository: widget.repository,
+                              entityType: 'carton',
+                              entityId: carton.id,
+                            ),
                           const SizedBox(height: 10),
                           if (widget.canManage) ...<Widget>[
                             Wrap(
@@ -1303,6 +1677,12 @@ class _CartonDetailsScreenState extends State<CartonDetailsScreen> {
                                       printing ? null : () => printUnits(units),
                                   icon: const Icon(Icons.print_outlined),
                                   label: Text(text.printUnits),
+                                ),
+                                OutlinedButton.icon(
+                                  onPressed:
+                                      printing ? null : () => printA4(units),
+                                  icon: const Icon(Icons.print),
+                                  label: Text(text.printA4),
                                 ),
                                 OutlinedButton.icon(
                                   onPressed:
@@ -1403,21 +1783,6 @@ class _UnitDetailsScreenState extends State<UnitDetailsScreen> {
   int revision = 0;
   bool busy = false;
 
-  Future<void> openUnit() async {
-    setState(() => busy = true);
-    try {
-      await widget.repository.openUnit(
-        actorId: widget.actorId,
-        unitId: widget.unitId,
-      );
-      if (mounted) setState(() => revision++);
-    } catch (error) {
-      if (mounted) _showError(context, error);
-    } finally {
-      if (mounted) setState(() => busy = false);
-    }
-  }
-
   Future<void> useUnit() async {
     final InventoryText text = InventoryText(context);
     final UnitRecord? current = await widget.repository.unitById(widget.unitId);
@@ -1430,24 +1795,22 @@ class _UnitDetailsScreenState extends State<UnitDetailsScreen> {
       );
       return;
     }
-    if (!widget.canManage) {
-      final UnitRecord? blocker = await widget.repository.blockingPreviousUnit(
-        widget.unitId,
+    final UnitRecord? blocker = await widget.repository.blockingPreviousUnit(
+      widget.unitId,
+    );
+    if (!mounted) return;
+    if (blocker != null) {
+      await _showWarningDialog(
+        context,
+        title: text.previousUnitWarning,
+        message:
+            '${text.previousUnitWarning}\n\n'
+            '${text.unit}: ${blocker.unitCode}\n'
+            '${text.remaining}: ${blocker.remainingQuantity} '
+            '${blocker.measureUnit}\n'
+            '${text.openedAt}: ${_dateTime(blocker.openedAt)}',
       );
-      if (!mounted) return;
-      if (blocker != null) {
-        await _showWarningDialog(
-          context,
-          title: text.previousUnitWarning,
-          message:
-              '${text.previousUnitWarning}\n\n'
-              '${text.unit}: ${blocker.unitCode}\n'
-              '${text.remaining}: ${blocker.remainingQuantity} '
-              '${blocker.measureUnit}\n'
-              '${text.openedAt}: ${_dateTime(blocker.openedAt)}',
-        );
-        return;
-      }
+      return;
     }
     final TextEditingController quantity = TextEditingController();
     quantity.text = current.remainingQuantity.toString();
@@ -1505,7 +1868,6 @@ class _UnitDetailsScreenState extends State<UnitDetailsScreen> {
         unitId: widget.unitId,
         quantity: amount,
         note: note.text,
-        enforceSequence: !widget.canManage,
       );
       if (mounted) setState(() => revision++);
     } catch (error) {
@@ -1526,6 +1888,9 @@ class _UnitDetailsScreenState extends State<UnitDetailsScreen> {
       );
       final bool printed = await Printing.layoutPdf(
         name: 'SmartChem-Unit-${unit.unitCode}',
+        format: InventoryLabelService.unitLabelFormat,
+        dynamicLayout: false,
+        forceCustomPrintPaper: true,
         onLayout: (_) async => bytes,
       );
       if (printed) {
@@ -1544,6 +1909,35 @@ class _UnitDetailsScreenState extends State<UnitDetailsScreen> {
     }
   }
 
+  Future<void> editUnit(UnitRecord unit) async {
+    final bool? saved = await showDialog<bool>(
+      context: context,
+      builder:
+          (_) => _EditUnitDialog(
+            repository: widget.repository,
+            actorId: widget.actorId,
+            unit: unit,
+          ),
+    );
+    if (saved == true && mounted) setState(() => revision++);
+  }
+
+  Future<void> deleteUnit(UnitRecord unit) async {
+    final String? reason = await _askRequiredReason(context, deleting: true);
+    if (reason == null || !mounted) return;
+    try {
+      await widget.repository.archiveEntity(
+        actorId: widget.actorId,
+        entityType: 'unit',
+        entityId: unit.id,
+        reason: reason,
+      );
+      if (mounted) Navigator.of(context).pop();
+    } catch (error) {
+      if (mounted) _showError(context, error);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final InventoryText text = InventoryText(context);
@@ -1553,7 +1947,24 @@ class _UnitDetailsScreenState extends State<UnitDetailsScreen> {
       builder: (BuildContext context, AsyncSnapshot<UnitRecord?> snapshot) {
         final UnitRecord? unit = snapshot.data;
         return Scaffold(
-          appBar: AppBar(title: Text(unit?.unitCode ?? text.unit)),
+          appBar: AppBar(
+            title: Text(unit?.unitCode ?? text.unit),
+            actions:
+                widget.canManage && unit != null
+                    ? <Widget>[
+                      IconButton(
+                        onPressed: () => editUnit(unit),
+                        tooltip: text.edit,
+                        icon: const Icon(Icons.edit_outlined),
+                      ),
+                      IconButton(
+                        onPressed: () => deleteUnit(unit),
+                        tooltip: text.delete,
+                        icon: const Icon(Icons.delete_outline),
+                      ),
+                    ]
+                    : null,
+          ),
           body:
               unit == null
                   ? const Center(child: CircularProgressIndicator())
@@ -1608,15 +2019,14 @@ class _UnitDetailsScreenState extends State<UnitDetailsScreen> {
                           ),
                         ],
                       ),
-                      const SizedBox(height: 14),
-                      if (widget.canManage && !unit.isOpened && !unit.isEmpty)
-                        FilledButton.icon(
-                          onPressed: busy ? null : openUnit,
-                          icon: const Icon(Icons.lock_open),
-                          label: Text(text.openUnit),
+                      if (widget.canManage)
+                        _AuditHistoryCard(
+                          repository: widget.repository,
+                          entityType: 'unit',
+                          entityId: unit.id,
                         ),
+                      const SizedBox(height: 14),
                       if (!unit.isEmpty) ...<Widget>[
-                        const SizedBox(height: 8),
                         OutlinedButton.icon(
                           onPressed: busy ? null : useUnit,
                           icon: const Icon(Icons.science_outlined),
@@ -1632,6 +2042,233 @@ class _UnitDetailsScreenState extends State<UnitDetailsScreen> {
                         ),
                     ],
                   ),
+        );
+      },
+    );
+  }
+}
+
+class _EditUnitDialog extends StatefulWidget {
+  const _EditUnitDialog({
+    required this.repository,
+    required this.actorId,
+    required this.unit,
+  });
+
+  final InventoryRepository repository;
+  final int actorId;
+  final UnitRecord unit;
+
+  @override
+  State<_EditUnitDialog> createState() => _EditUnitDialogState();
+}
+
+class _EditUnitDialogState extends State<_EditUnitDialog> {
+  final GlobalKey<FormState> formKey = GlobalKey<FormState>();
+  late final TextEditingController quantity;
+  final TextEditingController otherMeasureUnit = TextEditingController();
+  final TextEditingController reason = TextEditingController();
+  late String measureUnit;
+  bool busy = false;
+
+  @override
+  void initState() {
+    super.initState();
+    quantity = TextEditingController(
+      text: widget.unit.originalQuantity.toString(),
+    );
+    const List<String> supported = <String>[
+      'mL',
+      'Tests',
+      'Vials',
+      'Bottles',
+      'Cartridges',
+      'Packs',
+    ];
+    if (supported.contains(widget.unit.measureUnit)) {
+      measureUnit = widget.unit.measureUnit;
+    } else {
+      measureUnit = '__other__';
+      otherMeasureUnit.text = widget.unit.measureUnit;
+    }
+  }
+
+  @override
+  void dispose() {
+    quantity.dispose();
+    otherMeasureUnit.dispose();
+    reason.dispose();
+    super.dispose();
+  }
+
+  Future<void> save() async {
+    if (!(formKey.currentState?.validate() ?? false)) return;
+    setState(() => busy = true);
+    try {
+      await widget.repository.updateUnit(
+        actorId: widget.actorId,
+        unitId: widget.unit.id,
+        originalQuantity: double.parse(quantity.text),
+        measureUnit:
+            measureUnit == '__other__'
+                ? otherMeasureUnit.text.trim()
+                : measureUnit,
+        reason: reason.text,
+      );
+      if (mounted) Navigator.of(context).pop(true);
+    } catch (error) {
+      if (mounted) _showError(context, error);
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final InventoryText text = InventoryText(context);
+    return AlertDialog(
+      title: Text('${text.edit}: ${widget.unit.unitCode}'),
+      content: Form(
+        key: formKey,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              TextFormField(
+                controller: quantity,
+                keyboardType: const TextInputType.numberWithOptions(
+                  decimal: true,
+                ),
+                decoration: InputDecoration(labelText: text.quantityPerUnit),
+                validator: (String? value) {
+                  final double? parsed = double.tryParse(value ?? '');
+                  return parsed == null || parsed <= 0
+                      ? text.invalidNumber
+                      : null;
+                },
+              ),
+              const SizedBox(height: 10),
+              DropdownButtonFormField<String>(
+                initialValue: measureUnit,
+                decoration: InputDecoration(labelText: text.measureUnit),
+                items:
+                    const <String>[
+                          'mL',
+                          'Tests',
+                          'Vials',
+                          'Bottles',
+                          'Cartridges',
+                          'Packs',
+                          '__other__',
+                        ]
+                        .map(
+                          (String value) => DropdownMenuItem<String>(
+                            value: value,
+                            child: Text(
+                              value == '__other__' ? text.other : value,
+                            ),
+                          ),
+                        )
+                        .toList(),
+                onChanged: (String? value) {
+                  if (value != null) setState(() => measureUnit = value);
+                },
+              ),
+              if (measureUnit == '__other__') ...<Widget>[
+                const SizedBox(height: 10),
+                TextFormField(
+                  controller: otherMeasureUnit,
+                  decoration: InputDecoration(labelText: text.other),
+                  validator:
+                      (String? value) =>
+                          (value?.trim().isEmpty ?? true)
+                              ? text.required
+                              : null,
+                ),
+              ],
+              const SizedBox(height: 10),
+              TextFormField(
+                controller: reason,
+                decoration: InputDecoration(labelText: text.editReason),
+                validator:
+                    (String? value) =>
+                        (value?.trim().isEmpty ?? true) ? text.required : null,
+              ),
+            ],
+          ),
+        ),
+      ),
+      actions: <Widget>[
+        TextButton(
+          onPressed: busy ? null : () => Navigator.of(context).pop(false),
+          child: Text(text.cancel),
+        ),
+        FilledButton(onPressed: busy ? null : save, child: Text(text.save)),
+      ],
+    );
+  }
+}
+
+class _AuditHistoryCard extends StatelessWidget {
+  const _AuditHistoryCard({
+    required this.repository,
+    required this.entityType,
+    required this.entityId,
+  });
+
+  final InventoryRepository repository;
+  final String entityType;
+  final int entityId;
+
+  @override
+  Widget build(BuildContext context) {
+    final InventoryText text = InventoryText(context);
+    return FutureBuilder<List<Map<String, Object?>>>(
+      future: repository.auditHistory(entityType, entityId),
+      builder: (
+        BuildContext context,
+        AsyncSnapshot<List<Map<String, Object?>>> snapshot,
+      ) {
+        final List<Map<String, Object?>> entries =
+            snapshot.data
+                ?.where(
+                  (Map<String, Object?> row) =>
+                      row['action']?.toString().contains('EDIT') == true ||
+                      row['action']?.toString().contains('DELETE') == true,
+                )
+                .take(5)
+                .toList() ??
+            <Map<String, Object?>>[];
+        return Card(
+          color: Theme.of(context).colorScheme.surfaceContainerLow,
+          child: ExpansionTile(
+            leading: const Icon(Icons.history),
+            title: Text(text.changeHistory),
+            subtitle:
+                snapshot.connectionState == ConnectionState.waiting
+                    ? null
+                    : Text(
+                      entries.isEmpty
+                          ? text.noChanges
+                          : '${entries.length} ${text.changeHistory}',
+                    ),
+            children:
+                entries
+                    .map(
+                      (Map<String, Object?> row) => ListTile(
+                        dense: true,
+                        title: Text(
+                          '${row['action']} — '
+                          '${row['performer_name'] ?? row['performer_username'] ?? '-'}',
+                        ),
+                        subtitle: Text(
+                          '${text.reason}: ${row['reason'] ?? '-'}\n'
+                          '${_dateTime(inventoryDate(row['performed_at']))}',
+                        ),
+                      ),
+                    )
+                    .toList(),
+          ),
         );
       },
     );
@@ -1725,6 +2362,68 @@ String _stabilityText(ProductRecord product, InventoryText text) {
   return '${product.stabilityValue} $period';
 }
 
+Future<String?> _askRequiredReason(
+  BuildContext context, {
+  required bool deleting,
+}) async {
+  final InventoryText text = InventoryText(context);
+  final GlobalKey<FormState> formKey = GlobalKey<FormState>();
+  final TextEditingController controller = TextEditingController();
+  final String? result = await showDialog<String>(
+    context: context,
+    builder:
+        (BuildContext dialogContext) => AlertDialog(
+          icon:
+              deleting
+                  ? const Icon(Icons.delete_outline, color: Colors.red)
+                  : const Icon(Icons.edit_note),
+          title: Text(deleting ? text.delete : text.edit),
+          content: Form(
+            key: formKey,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                if (deleting) ...<Widget>[
+                  Text(text.confirmDelete),
+                  const SizedBox(height: 12),
+                ],
+                TextFormField(
+                  controller: controller,
+                  autofocus: true,
+                  maxLines: 3,
+                  decoration: InputDecoration(
+                    labelText: deleting ? text.deleteReason : text.editReason,
+                    border: const OutlineInputBorder(),
+                  ),
+                  validator:
+                      (String? value) =>
+                          (value?.trim().isEmpty ?? true)
+                              ? text.required
+                              : null,
+                ),
+              ],
+            ),
+          ),
+          actions: <Widget>[
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: Text(text.cancel),
+            ),
+            FilledButton(
+              onPressed: () {
+                if (formKey.currentState?.validate() ?? false) {
+                  Navigator.of(dialogContext).pop(controller.text.trim());
+                }
+              },
+              child: Text(deleting ? text.delete : text.save),
+            ),
+          ],
+        ),
+  );
+  controller.dispose();
+  return result;
+}
+
 Future<void> _showWarningDialog(
   BuildContext context, {
   required String title,
@@ -1755,6 +2454,10 @@ void _showError(BuildContext context, Object error) {
           ? '${text.previousUnitWarning}: ${error.blockingUnit.unitCode}'
           : value.contains('UNIT_EXPIRED')
           ? text.expiredUnitWarning
+          : value.contains('EDIT_REASON_REQUIRED')
+          ? text.editReason
+          : value.contains('QUANTITY_BELOW_USED')
+          ? '${text.quantityPerUnit}: ${text.invalidNumber}'
           : value.contains('INVALID_QUANTITY')
           ? text.invalidNumber
           : value;

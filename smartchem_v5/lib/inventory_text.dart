@@ -123,4 +123,19 @@ class InventoryText {
   String get scanUnit => value('مسح علبة', 'Scan unit');
   String get downloadPdf => value('تنزيل PDF', 'Download PDF');
   String get downloadExcel => value('تنزيل Excel', 'Download Excel');
+  String get edit => value('تعديل', 'Edit');
+  String get delete => value('حذف', 'Delete');
+  String get deleteReason =>
+      value('سبب الحذف (إجباري)', 'Delete reason (required)');
+  String get editReason =>
+      value('سبب التعديل (إجباري)', 'Edit reason (required)');
+  String get confirmDelete => value(
+    'سيتم إخفاء هذا السجل مع الاحتفاظ ببياناته وسجل التدقيق. اكتب السبب للمتابعة.',
+    'This record will be hidden while its data and audit trail are retained. Enter the reason to continue.',
+  );
+  String get changeHistory => value('سجل التعديلات', 'Change history');
+  String get performedBy => value('نفذ بواسطة', 'Performed by');
+  String get noChanges => value('لا توجد تعديلات مسجلة', 'No recorded changes');
+  String get printA4 => value('طباعة تقرير A4', 'Print A4 report');
+  String get barcodeLabel => value('ملصق باركود', 'Barcode label');
 }

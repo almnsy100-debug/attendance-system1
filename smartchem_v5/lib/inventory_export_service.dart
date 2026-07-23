@@ -11,6 +11,8 @@ import 'package:share_plus/share_plus.dart';
 import 'inventory_models.dart';
 
 class InventoryExportService {
+  static final PdfPageFormat a4Format = PdfPageFormat.a4;
+
   static const List<String> headers = <String>[
     'Product',
     'Internal No',
@@ -105,9 +107,9 @@ class InventoryExportService {
     final pw.Font font = pw.Font.ttf(fontBytes);
     final pw.Document document = pw.Document(
       theme: pw.ThemeData.withFont(
-        base: font,
-        bold: font,
-        fontFallback: <pw.Font>[pw.Font.helvetica()],
+        base: pw.Font.helvetica(),
+        bold: pw.Font.helveticaBold(),
+        fontFallback: <pw.Font>[font],
       ),
     );
     document.addPage(
@@ -121,7 +123,6 @@ class InventoryExportService {
                 pw.Text(
                   'SmartChem Track - Product / LOT / Carton / Unit',
                   style: pw.TextStyle(
-                    font: font,
                     fontSize: 15,
                     fontWeight: pw.FontWeight.bold,
                   ),
@@ -129,7 +130,7 @@ class InventoryExportService {
                 pw.Text(
                   'Generated: ${_dateTime(DateTime.now())} | '
                   'Records: ${units.length}',
-                  style: pw.TextStyle(font: font, fontSize: 8),
+                  style: const pw.TextStyle(fontSize: 8),
                 ),
                 pw.SizedBox(height: 8),
               ],
@@ -139,7 +140,7 @@ class InventoryExportService {
               alignment: pw.Alignment.center,
               child: pw.Text(
                 '${context.pageNumber} / ${context.pagesCount}',
-                style: pw.TextStyle(font: font, fontSize: 8),
+                style: const pw.TextStyle(fontSize: 8),
               ),
             ),
         build:
@@ -159,7 +160,6 @@ class InventoryExportService {
                         pw.Text(
                           '${unit.productName} - ${unit.unitCode}',
                           style: pw.TextStyle(
-                            font: font,
                             fontSize: 10,
                             fontWeight: pw.FontWeight.bold,
                           ),
@@ -175,10 +175,7 @@ class InventoryExportService {
                                 child: pw.Text(
                                   '${headers[index]}: '
                                   '${values[index].isEmpty ? '-' : values[index]}',
-                                  style: pw.TextStyle(
-                                    font: font,
-                                    fontSize: 6.5,
-                                  ),
+                                  style: pw.TextStyle(fontSize: 6.5),
                                 ),
                               ),
                           ],
